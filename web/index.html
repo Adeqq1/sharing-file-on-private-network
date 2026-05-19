@@ -1,0 +1,93 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="theme-color" content="#2563eb" />
+  <title>LAN Hub</title>
+  <link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+  <!-- PIN Login Screen (tersembunyi jika PIN tidak aktif) -->
+  <div id="login-screen" class="login-screen hidden">
+    <div class="login-card">
+      <div class="login-icon">🔒</div>
+      <h1>LAN Hub</h1>
+      <p class="login-subtitle">Masukkan PIN untuk melanjutkan</p>
+      <div class="pin-inputs" id="pin-inputs">
+        <input type="tel" maxlength="1" class="pin-digit" inputmode="numeric" pattern="[0-9]" />
+        <input type="tel" maxlength="1" class="pin-digit" inputmode="numeric" pattern="[0-9]" />
+        <input type="tel" maxlength="1" class="pin-digit" inputmode="numeric" pattern="[0-9]" />
+        <input type="tel" maxlength="1" class="pin-digit" inputmode="numeric" pattern="[0-9]" />
+      </div>
+      <p id="pin-error" class="pin-error hidden">PIN salah, coba lagi.</p>
+      <button id="btn-login" class="btn btn-primary btn-full">Masuk</button>
+    </div>
+  </div>
+
+  <!-- Main App -->
+  <div id="app" class="hidden">
+    <header class="header">
+      <div class="header-inner">
+        <div class="header-title">
+          <span class="header-icon">📡</span>
+          <h1>LAN Hub</h1>
+        </div>
+        <div class="header-actions">
+          <button id="btn-refresh" class="icon-btn" title="Refresh" aria-label="Refresh">↻</button>
+          <button id="btn-upload" class="icon-btn" title="Upload file" aria-label="Upload">⬆</button>
+        </div>
+      </div>
+    </header>
+
+    <main class="main">
+      <!-- Breadcrumb -->
+      <nav class="breadcrumb" id="breadcrumb" aria-label="Navigasi folder"></nav>
+
+      <!-- Search -->
+      <div class="search-wrap">
+        <input
+          type="search"
+          id="search-input"
+          class="search-input"
+          placeholder="Cari file atau folder..."
+          aria-label="Cari file"
+        />
+      </div>
+
+      <!-- File list -->
+      <section class="file-section" aria-live="polite">
+        <div id="spinner" class="spinner hidden" aria-label="Memuat...">
+          <div class="spinner-ring"></div>
+        </div>
+        <div id="error-box" class="error-box hidden" role="alert"></div>
+        <ul id="file-list" class="file-list" role="list"></ul>
+        <p id="empty-msg" class="empty-msg hidden">Folder ini kosong.</p>
+      </section>
+    </main>
+
+    <!-- Upload input (tersembunyi) -->
+    <input type="file" id="upload-input" class="hidden" multiple />
+
+    <!-- Modal "Open With" -->
+    <div id="modal-overlay" class="modal-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="modal-title">
+      <div class="modal">
+        <div class="modal-header">
+          <h2 id="modal-title">Buka dengan...</h2>
+          <button id="modal-close" class="icon-btn" aria-label="Tutup modal">✕</button>
+        </div>
+        <p id="modal-filename" class="modal-filename"></p>
+        <div id="modal-apps" class="modal-apps"></div>
+        <div class="modal-footer">
+          <button id="btn-download" class="btn btn-secondary">⬇ Download ke HP</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Toast notification -->
+    <div id="toast" class="toast hidden" role="status" aria-live="polite"></div>
+  </div>
+
+  <script src="/app.js"></script>
+</body>
+</html>

@@ -1,61 +1,139 @@
-# LAN Hub
+# LAN Hub 📡
 
-Web service ringan untuk berbagi file dan membuka file dari perangkat mobile di jaringan LAN yang sama.
+Web service ringan berbasis **Go native** (zero dependency eksternal) untuk berbagi file dan membuka file di laptop dari perangkat mobile dalam **jaringan LAN yang sama**.
 
-## Fitur
+> Cocok untuk yang sering pindah file antara HP dan laptop tanpa harus colok kabel atau pakai cloud.
 
-- 📁 Browse folder yang di-share dari HP/tablet
-- 🖥️ Buka file di laptop dengan aplikasi pilihan ("Open With")
-- ⬇️ Download file ke HP
-- ⬆️ Upload file dari HP ke laptop
-- 🔒 PIN opsional agar tidak sembarang orang bisa akses
-- 🌙 Dark mode otomatis
-- 📱 Responsif di semua ukuran layar
+---
 
-## Cara Menjalankan
+## ✨ Fitur
 
-### Prasyarat
+| | |
+|---|---|
+| 📁 **Browse file** | Jelajahi folder yang di-share langsung dari HP, dengan breadcrumb dan search |
+| 🖥️ **Open With** | Klik file di HP, pilih aplikasi, file langsung dibuka di laptop (VLC, Notepad, dll) |
+| ⬇️ **Download** | Download file dari laptop ke HP dengan satu tap |
+| ⬆️ **Upload** | Upload file dari HP ke laptop, batas 200 MB per file |
+| 🔒 **PIN opsional** | PIN 4 digit acak per sesi, dengan rate limit anti brute-force |
+| 🌙 **Dark mode** | Mengikuti pengaturan sistem secara otomatis |
+| 📱 **Responsive** | Mobile-first, ringan (< 20KB total aset frontend) |
 
-- [Go 1.21+](https://go.dev/dl/)
-- Windows (untuk fitur "Open With")
+---
 
-### Langkah
+## 🚀 Quick Start
 
-1. Clone atau download repo ini.
+### 1. Prasyarat
 
-2. Edit `config.json` sesuai kebutuhan (lihat bagian Konfigurasi di bawah).
+- **[Go 1.21+](https://go.dev/dl/)** terinstall di laptop
+- **Windows** (Linux/Mac juga jalan, tapi fitur "Open With" optimal di Windows)
+- Laptop dan HP terhubung ke **WiFi/router yang sama**
 
-3. Jalankan server:
-   ```
-   go run main.go
-   ```
+### 2. Clone repo
 
-4. Buka browser di HP dan akses URL yang tercetak di console, contoh:
-   ```
-   http://192.168.1.10:8080
-   ```
+```cmd
+git clone https://github.com/Adeqq1/sharing-file-on-private-network.git
+cd sharing-file-on-private-network
+```
 
-5. Pastikan firewall Windows mengizinkan port 8080. Saat dialog muncul, klik **Allow access**.
+### 3. Buat `config.json` dari template
 
-## Konfigurasi (`config.json`)
+```cmd
+copy config.example.json config.json
+```
+
+> File `config.json` masuk `.gitignore` agar konfigurasi laptop kamu tidak ter-commit.
+
+### 4. Edit `config.json`
+
+Ubah field `shared_folder` ke path folder yang mau dibagikan. Contoh:
 
 ```json
 {
   "shared_folder": "C:\\Users\\NamaKamu\\Shared",
   "port": 8080,
   "pin_enabled": false,
+  "apps": [...]
+}
+```
+
+> 💡 Folder akan dibuat otomatis kalau belum ada.
+
+### 5. Jalankan server
+
+```cmd
+go run main.go
+```
+
+Output di console akan seperti ini:
+
+```
+┌─────────────────────────────────────────┐
+│           LAN Hub Server                │
+├─────────────────────────────────────────┤
+│  Laptop  : http://localhost:8080
+│  HP/Tablet: http://192.168.1.10:8080
+├─────────────────────────────────────────┤
+│  Shared  : C:\Users\NamaKamu\Shared
+└─────────────────────────────────────────┘
+
+Tekan Ctrl+C untuk menghentikan server.
+```
+
+### 6. Akses dari HP
+
+1. Pastikan HP terhubung ke WiFi yang sama dengan laptop.
+2. Buka browser di HP, ketik URL `http://192.168.x.x:8080` (sesuai output di console).
+3. Saat pertama jalan, **Windows akan menampilkan dialog firewall**. Klik **Allow access** (centang Private network).
+
+> Jika halaman tidak terbuka, lihat bagian [Troubleshooting](#-troubleshooting) di bawah.
+
+---
+
+## ⚙️ Konfigurasi (`config.json`)
+
+### Field utama
+
+| Field | Tipe | Keterangan |
+|---|---|---|
+| `shared_folder` | string | Path absolut folder yang dibagikan. Akan dibuat otomatis jika belum ada. |
+| `port` | int | Port HTTP server. Default: `8080`. Ganti jika bentrok dengan aplikasi lain. |
+| `pin_enabled` | bool | `true` untuk aktifkan login PIN 4 digit. PIN digenerate acak tiap startup. |
+| `apps` | array | Daftar aplikasi yang bisa dipakai untuk "Open With". |
+
+### Field per aplikasi
+
+| Field | Keterangan |
+|---|---|
+| `id` | ID unik (huruf kecil, tanpa spasi). Dipakai internal, tidak ditampilkan ke user. |
+| `name` | Nama yang muncul di tombol modal "Open With". |
+| `exec` | Path lengkap ke executable. Kosongkan (`""`) untuk pakai aplikasi default Windows. |
+| `extensions` | Array ekstensi file yang cocok (tanpa titik). Pakai `["*"]` untuk semua file. |
+
+### Contoh konfigurasi lengkap
+
+```json
+{
+  "shared_folder": "D:\\LANShare",
+  "port": 8080,
+  "pin_enabled": true,
   "apps": [
     {
       "id": "vlc",
       "name": "VLC Media Player",
       "exec": "C:\\Program Files\\VideoLAN\\VLC\\vlc.exe",
-      "extensions": ["mp4", "mkv", "mp3"]
+      "extensions": ["mp4", "mkv", "avi", "mp3", "flac"]
     },
     {
-      "id": "notepad",
-      "name": "Notepad",
-      "exec": "notepad.exe",
-      "extensions": ["txt", "log", "md"]
+      "id": "vscode",
+      "name": "Visual Studio Code",
+      "exec": "C:\\Users\\NamaKamu\\AppData\\Local\\Programs\\Microsoft VS Code\\Code.exe",
+      "extensions": ["txt", "md", "js", "go", "py", "json", "html", "css"]
+    },
+    {
+      "id": "photos",
+      "name": "Windows Photos",
+      "exec": "",
+      "extensions": ["jpg", "jpeg", "png", "gif", "webp"]
     },
     {
       "id": "default",
@@ -67,46 +145,187 @@ Web service ringan untuk berbagi file dan membuka file dari perangkat mobile di 
 }
 ```
 
-| Field | Keterangan |
+> ⚠️ **Penting**: Path Windows di JSON pakai **double backslash** (`\\`), bukan single. Salah satu penyebab umum config gagal di-load.
+
+---
+
+## 🔒 Keamanan
+
+LAN Hub dirancang untuk pemakaian rumah/kantor pribadi, bukan untuk diekspos ke internet.
+
+| Lapisan | Penjelasan |
 |---|---|
-| `shared_folder` | Path absolut folder yang akan di-share. Dibuat otomatis jika belum ada. |
-| `port` | Port HTTP server. Default: `8080`. |
-| `pin_enabled` | `true` untuk mengaktifkan PIN 4 digit. PIN digenerate acak tiap startup dan tercetak di console. |
-| `apps[].id` | ID unik aplikasi (dipakai internal). |
-| `apps[].name` | Nama yang ditampilkan di UI. |
-| `apps[].exec` | Path ke executable. Kosongkan (`""`) untuk menggunakan aplikasi default Windows. |
-| `apps[].extensions` | Daftar ekstensi file yang bisa dibuka app ini. Gunakan `"*"` untuk semua file. |
+| **Path traversal** | Semua path dari HP divalidasi agar tetap di dalam `shared_folder`. Symlink yang menunjuk keluar juga ditolak. |
+| **App whitelisting** | Path executable (`exec`) tidak pernah diterima dari client. Client hanya kirim `app_id`, server cocokkan dengan daftar di `config.json`. |
+| **PIN brute-force protection** | Jika PIN aktif, akun dikunci 5 menit setelah 5 percobaan gagal. |
+| **HTTP-only cookie** | Token sesi tidak bisa diakses lewat JavaScript di client. |
+| **Cookie expiry** | Sesi otomatis expired setelah 24 jam, plus janitor goroutine membersihkan token kadaluarsa tiap 30 menit. |
 
-## Struktur Proyek
+> ⚠️ **Jangan port-forward server ini ke internet**. Ini bukan hardened service untuk publik.
 
-```
-├── main.go                 # Entry point
-├── config.json             # Konfigurasi
-├── internal/
-│   ├── apps/               # Logika filter aplikasi
-│   ├── files/              # Logika listing & validasi path
-│   ├── netinfo/            # Deteksi IP LAN
-│   └── server/             # HTTP handlers & routing
-├── web/
-│   ├── index.html          # Halaman utama
-│   ├── style.css           # Styling (mobile-first, dark mode)
-│   └── app.js              # Logic frontend (vanilla JS)
-└── README.md
-```
+---
 
-## Keamanan
+## 🛠️ Cara Pakai (User Guide)
 
-- Server hanya bisa diakses dari jaringan LAN (tidak terekspos ke internet selama router tidak melakukan port forwarding).
-- Path traversal dicegah: semua path dari client divalidasi agar tetap di dalam `shared_folder`.
-- `exec` aplikasi tidak pernah diterima dari client; hanya `app_id` yang dikirim, lalu server mencari `exec` dari `config.json`.
-- Aktifkan `pin_enabled: true` jika ingin lapisan keamanan tambahan.
+### Browse file
+1. Buka URL server di HP.
+2. Tap folder untuk masuk, atau tap **🏠 Home** di breadcrumb untuk balik ke root.
+3. Pakai search bar di atas untuk filter file di folder saat ini.
 
-## Build (opsional)
+### Buka file di laptop ("Open With")
+1. Tap nama file (bukan folder) di list.
+2. Modal "Buka dengan..." muncul, menampilkan app yang cocok dengan ekstensi file tersebut.
+3. Tap aplikasi pilihan → file langsung terbuka di laptop.
 
-Untuk membuat binary yang bisa dijalankan tanpa Go terinstall:
+### Download ke HP
+1. Tap file → modal muncul.
+2. Tap tombol **⬇ Download ke HP** di bagian bawah modal.
 
-```
+### Upload dari HP
+1. Tap ikon **⬆** di pojok kanan atas header.
+2. Pilih satu atau beberapa file dari HP.
+3. File otomatis di-upload ke folder yang sedang aktif di breadcrumb.
+4. Jika nama file sudah ada di server, otomatis diberi suffix `(1)`, `(2)`, dst.
+
+### Login dengan PIN (jika diaktifkan)
+1. Saat server start, PIN 4 digit acak akan tercetak di console laptop.
+2. Buka URL di HP → halaman login muncul.
+3. Ketik PIN yang tercetak di console.
+4. Sesi tersimpan 24 jam (cookie HTTP-only).
+
+---
+
+## 🧰 Troubleshooting
+
+### "Connection refused" saat akses dari HP
+- Pastikan laptop dan HP di **WiFi yang sama**.
+- Cek firewall Windows: buka **Windows Defender Firewall** → **Allow an app** → cari "Go" atau executable kamu, pastikan **Private network** dicentang.
+- Coba ping dari HP: install app "Network Tools", ping ke IP laptop.
+
+### IP LAN tidak terdeteksi (muncul `127.0.0.1` atau kosong)
+- Mungkin laptop tidak terhubung WiFi/Ethernet.
+- Cek manual via cmd: `ipconfig` → cari "IPv4 Address" di adapter aktif.
+
+### Port 8080 sudah dipakai
+- Ubah `port` di `config.json` ke port lain (misal `8081`, `9000`).
+- Atau cek aplikasi yang pakai port 8080: `netstat -ano | findstr :8080` di cmd.
+
+### Konfigurasi `apps[]` tidak muncul di modal "Open With"
+- Pastikan ekstensi di `extensions` cocok dengan file yang di-tap (lowercase, tanpa titik).
+- Lihat output console: jika ada peringatan `apps[N]: exec '...' tidak ditemukan`, perbaiki path executable.
+- Pastikan `extensions` adalah array string, contoh `["mp4", "mkv"]` bukan `"mp4,mkv"`.
+
+### File tidak terbuka di laptop saat tap "Open With"
+- Cek log di console laptop — akan tercatat method, path, dan status code request.
+- Pastikan path executable di `config.json` benar (test buka manual di Windows Explorer).
+- Jika pakai aplikasi UWP/Microsoft Store (mis. Photos baru), kosongkan `exec` dan pakai default Windows.
+
+### Saya lupa PIN
+- PIN digenerate ulang setiap kali server di-restart. Stop server (Ctrl+C), jalankan lagi, PIN baru akan tercetak.
+
+---
+
+## 🏗️ Build Binary (Opsional)
+
+Untuk dapat `.exe` standalone yang bisa dijalankan tanpa Go terinstall:
+
+```cmd
 go build -o lan-hub.exe .
 ```
 
-Lalu jalankan `lan-hub.exe` dari folder yang sama dengan `config.json` dan folder `web/`.
+Setelah selesai, kamu cukup punya 3 hal di folder yang sama:
+
+```
+lan-hub.exe
+config.json
+web/
+  ├── index.html
+  ├── style.css
+  └── app.js
+```
+
+Lalu jalankan:
+
+```cmd
+lan-hub.exe
+```
+
+> 💡 Bisa dipindah ke folder lain (misal Desktop), asalkan `config.json` dan folder `web/` ikut dipindah bersama `.exe`.
+
+### Buat shortcut "double-click to run"
+
+1. Klik kanan `lan-hub.exe` → **Create shortcut**.
+2. Pindah shortcut ke Desktop.
+3. (Opsional) Klik kanan shortcut → Properties → tab Shortcut → klik **Change Icon** untuk ganti ikon.
+
+---
+
+## 📂 Struktur Proyek
+
+```
+project-lan-serverPrivate/
+├── main.go                       # Entry point + graceful shutdown
+├── config.json                   # Konfigurasi (gitignored)
+├── config.example.json           # Template config (di-commit)
+├── go.mod                        # Go module (zero dependency eksternal)
+├── internal/
+│   ├── apps/apps.go              # Filter aplikasi by extension
+│   ├── files/files.go            # Listing folder + ResolveSafe (anti traversal)
+│   ├── netinfo/netinfo.go        # Deteksi IP LAN
+│   └── server/
+│       ├── server.go             # Routing + middleware (logger, cache)
+│       ├── handlers.go           # Semua HTTP handlers
+│       ├── auth.go               # PIN + token + rate limit
+│       └── config.go             # Load + validasi config.json
+├── web/
+│   ├── index.html                # Halaman utama
+│   ├── style.css                 # Mobile-first, dark mode
+│   └── app.js                    # Vanilla JS (no framework)
+├── .gitignore
+└── README.md
+```
+
+---
+
+## 🌐 API Reference
+
+Semua endpoint butuh cookie `auth` jika `pin_enabled: true`.
+
+| Method | Endpoint | Query / Body | Response |
+|---|---|---|---|
+| `GET` | `/api/files` | `?path=<relative>` | `{ path, items: [{name, is_dir, size, mod_time, ext}] }` |
+| `GET` | `/api/apps` | `?ext=<extension>` | `[{id, name}]` |
+| `POST` | `/api/open` | `{app_id, path}` | `{ok: true}` |
+| `GET` | `/api/download` | `?path=<relative>` | File stream (attachment) |
+| `POST` | `/api/upload` | `?path=<folder>` + multipart `file` | `{ok: true, name}` |
+| `POST` | `/api/login` | `{pin}` | `{ok: true}` + cookie `auth` |
+
+### Status code yang umum
+
+| Code | Arti |
+|---|---|
+| `200` | Sukses |
+| `400` | Path tidak diizinkan / body invalid / app_id tidak ada / mencoba buka folder |
+| `401` | Belum login (PIN aktif tapi cookie tidak valid) |
+| `404` | File tidak ditemukan |
+| `413` | File upload melebihi 200 MB |
+| `429` | Rate limit (5 percobaan PIN gagal — lock 5 menit) |
+| `500` | Error server (cek log console) |
+
+---
+
+## 🛣️ Roadmap (Ide Lanjutan)
+
+- [ ] Preview gambar/video langsung di HP (tanpa download)
+- [ ] QR code generator untuk URL server (scan dari HP, otomatis buka)
+- [ ] Multi-user dengan PIN berbeda per device
+- [ ] HTTPS via mkcert/local CA untuk akses lebih aman
+- [ ] Compress folder jadi `.zip` saat download
+
+Punya ide lain? Buka issue di GitHub.
+
+---
+
+## 📜 Lisensi
+
+MIT — bebas dipakai dan dimodifikasi untuk pemakaian pribadi maupun komersial.

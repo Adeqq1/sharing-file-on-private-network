@@ -1,12 +1,16 @@
 package files
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
 )
+
+// ErrPathNotAllowed dikembalikan saat path mencoba keluar dari shared folder.
+var ErrPathNotAllowed = errors.New("path tidak diizinkan")
 
 // Item merepresentasikan satu entri file atau folder.
 type Item struct {
@@ -23,23 +27,48 @@ type ListResult struct {
 	Items []Item `json:"items"`
 }
 
+// ResolveSafe menggabungkan sharedRoot + relPath, membersihkan path,
+// lalu memastikan hasilnya masih di dalam sharedRoot (termasuk cek symlink).
+// Mengembalikan ErrPathNotAllowed jika path mencoba keluar.
+func ResolveSafe(sharedRoot, relPath string) (string, error) {
+	absRoot, err := filepath.Abs(sharedRoot)
+	if err != nil {
+		return "", fmt.Errorf("shared_folder tidak valid: %w", err)
+	}
+
+	target := filepath.Clean(filepath.Join(absRoot, filepath.FromSlash(relPath)))
+	sep := string(filepath.Separator)
+
+	// Cek path traversal dasar
+	if target != absRoot && !strings.HasPrefix(target+sep, absRoot+sep) {
+		return "", ErrPathNotAllowed
+	}
+
+	// Cek symlink traversal: resolve symlink lalu cek ulang
+	realTarget, err := filepath.EvalSymlinks(target)
+	if err == nil {
+		realRoot, _ := filepath.EvalSymlinks(absRoot)
+		if realTarget != realRoot && !strings.HasPrefix(realTarget+sep, realRoot+sep) {
+			return "", ErrPathNotAllowed
+		}
+	}
+	// Jika EvalSymlinks error (file belum ada, misal saat upload), biarkan lewat —
+	// caller bertanggung jawab cek keberadaan file.
+
+	return target, nil
+}
+
 // List membaca isi folder relatif terhadap sharedRoot.
-// Mengembalikan error jika relPath mencoba keluar dari sharedRoot (path traversal).
+// Mengembalikan ErrPathNotAllowed jika relPath mencoba keluar dari sharedRoot.
 func List(sharedRoot, relPath string) (*ListResult, error) {
-	// Bersihkan dan gabungkan path
 	absRoot, err := filepath.Abs(sharedRoot)
 	if err != nil {
 		return nil, fmt.Errorf("shared_folder tidak valid: %w", err)
 	}
 
-	target := filepath.Join(absRoot, filepath.FromSlash(relPath))
-	target = filepath.Clean(target)
-
-	// Keamanan: pastikan target masih di dalam absRoot
-	if !strings.HasPrefix(target+string(filepath.Separator), absRoot+string(filepath.Separator)) {
-		if target != absRoot {
-			return nil, fmt.Errorf("path tidak diizinkan")
-		}
+	target, err := ResolveSafe(sharedRoot, relPath)
+	if err != nil {
+		return nil, err
 	}
 
 	entries, err := os.ReadDir(target)
@@ -55,8 +84,7 @@ func List(sharedRoot, relPath string) (*ListResult, error) {
 		}
 		ext := ""
 		if !e.IsDir() {
-			ext = strings.TrimPrefix(filepath.Ext(e.Name()), ".")
-			ext = strings.ToLower(ext)
+			ext = strings.ToLower(strings.TrimPrefix(filepath.Ext(e.Name()), "."))
 		}
 		items = append(items, Item{
 			Name:    e.Name(),

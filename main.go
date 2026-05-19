@@ -1,16 +1,20 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"lan-server/internal/netinfo"
 	"lan-server/internal/server"
 	"log"
 	"net/http"
 	"os"
+	"os/signal"
+	"syscall"
+	"time"
 )
 
 func main() {
-	// Baca config.json
+	// Baca dan validasi config.json
 	cfg, err := server.LoadConfig("config.json")
 	if err != nil {
 		log.Fatalf("ERROR: %v\nPastikan config.json ada di folder yang sama dengan main.go\n", err)
@@ -30,6 +34,8 @@ func main() {
 		fmt.Println("╔══════════════════════════════════╗")
 		fmt.Printf("║  PIN Akses: %s                  ║\n", pin)
 		fmt.Println("╚══════════════════════════════════╝")
+		// Jalankan janitor untuk bersihkan token expired secara berkala
+		server.StartTokenJanitor()
 	}
 
 	// Deteksi IP LAN
@@ -38,9 +44,7 @@ func main() {
 		lanIP = "tidak terdeteksi"
 	}
 
-	addr := server.Addr(cfg)
 	port := cfg.Port
-
 	fmt.Println()
 	fmt.Println("┌─────────────────────────────────────────┐")
 	fmt.Println("│           LAN Hub Server                │")
@@ -54,8 +58,34 @@ func main() {
 	fmt.Println("Tekan Ctrl+C untuk menghentikan server.")
 	fmt.Println()
 
-	handler := server.New(cfg)
-	if err := http.ListenAndServe(addr, handler); err != nil {
+	// Buat server dengan timeout
+	srv := server.NewServer(cfg)
+
+	// Jalankan server di goroutine agar tidak block signal handler
+	serverErr := make(chan error, 1)
+	go func() {
+		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			serverErr <- err
+		}
+	}()
+
+	// Graceful shutdown: tunggu SIGINT atau SIGTERM
+	quit := make(chan os.Signal, 1)
+	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
+
+	select {
+	case err := <-serverErr:
 		log.Fatalf("Server error: %v\n", err)
+	case sig := <-quit:
+		fmt.Printf("\nMenerima sinyal %s, menghentikan server...\n", sig)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	if err := srv.Shutdown(ctx); err != nil {
+		log.Printf("Shutdown paksa: %v\n", err)
+	} else {
+		fmt.Println("Server berhenti dengan bersih.")
 	}
 }

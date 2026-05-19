@@ -2,6 +2,7 @@ package server
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"lan-server/internal/apps"
@@ -20,6 +21,20 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 	json.NewEncoder(w).Encode(v)
 }
 
+// resolveSafeOrRespond adalah helper: resolve path aman, atau tulis error response dan return false.
+func resolveSafeOrRespond(w http.ResponseWriter, sharedRoot, relPath string) (string, bool) {
+	target, err := files.ResolveSafe(sharedRoot, relPath)
+	if err != nil {
+		if errors.Is(err, files.ErrPathNotAllowed) {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "path tidak diizinkan"})
+		} else {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		}
+		return "", false
+	}
+	return target, true
+}
+
 // HandleFiles menangani GET /api/files?path=<relative>
 func HandleFiles(cfg *Config) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
@@ -30,7 +45,7 @@ func HandleFiles(cfg *Config) http.HandlerFunc {
 		relPath := r.URL.Query().Get("path")
 		result, err := files.List(cfg.SharedFolder, relPath)
 		if err != nil {
-			if strings.Contains(err.Error(), "tidak diizinkan") {
+			if errors.Is(err, files.ErrPathNotAllowed) {
 				writeJSON(w, http.StatusBadRequest, map[string]string{"error": "path tidak diizinkan"})
 				return
 			}
@@ -84,15 +99,21 @@ func HandleOpen(cfg *Config) http.HandlerFunc {
 			return
 		}
 
-		// Validasi path (cegah path traversal)
-		absRoot, _ := filepath.Abs(cfg.SharedFolder)
-		target := filepath.Join(absRoot, filepath.FromSlash(req.Path))
-		target = filepath.Clean(target)
-		if !strings.HasPrefix(target+string(filepath.Separator), absRoot+string(filepath.Separator)) {
-			if target != absRoot {
-				writeJSON(w, http.StatusBadRequest, map[string]string{"error": "path tidak diizinkan"})
-				return
-			}
+		// Validasi path (DRY via resolveSafeOrRespond — termasuk symlink check)
+		target, ok := resolveSafeOrRespond(w, cfg.SharedFolder, req.Path)
+		if !ok {
+			return
+		}
+
+		// Verifikasi file ada dan bukan folder (#2)
+		info, err := os.Stat(target)
+		if err != nil {
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": "file tidak ditemukan"})
+			return
+		}
+		if info.IsDir() {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "tidak bisa membuka folder dengan Open With"})
+			return
 		}
 
 		// Cari app berdasarkan app_id (exec HANYA dari config, tidak dari client)
@@ -135,16 +156,10 @@ func HandleDownload(cfg *Config) http.HandlerFunc {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 			return
 		}
-		relPath := r.URL.Query().Get("path")
-		absRoot, _ := filepath.Abs(cfg.SharedFolder)
-		target := filepath.Join(absRoot, filepath.FromSlash(relPath))
-		target = filepath.Clean(target)
 
-		if !strings.HasPrefix(target+string(filepath.Separator), absRoot+string(filepath.Separator)) {
-			if target != absRoot {
-				http.Error(w, "path tidak diizinkan", http.StatusBadRequest)
-				return
-			}
+		target, ok := resolveSafeOrRespond(w, cfg.SharedFolder, r.URL.Query().Get("path"))
+		if !ok {
+			return
 		}
 
 		info, err := os.Stat(target)
@@ -158,6 +173,25 @@ func HandleDownload(cfg *Config) http.HandlerFunc {
 	}
 }
 
+// uniqueDestPath mengembalikan path tujuan yang tidak bentrok dengan file existing.
+// Jika "file.txt" sudah ada, coba "file (1).txt", "file (2).txt", dst.
+func uniqueDestPath(dir, filename string) string {
+	dest := filepath.Join(dir, filename)
+	if _, err := os.Stat(dest); os.IsNotExist(err) {
+		return dest
+	}
+	ext := filepath.Ext(filename)
+	base := strings.TrimSuffix(filename, ext)
+	for i := 1; i <= 999; i++ {
+		candidate := filepath.Join(dir, fmt.Sprintf("%s (%d)%s", base, i, ext))
+		if _, err := os.Stat(candidate); os.IsNotExist(err) {
+			return candidate
+		}
+	}
+	// Fallback: pakai nama asli (akan overwrite)
+	return dest
+}
+
 // HandleUpload menangani POST /api/upload?path=<relative_folder>
 func HandleUpload(cfg *Config) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
@@ -166,23 +200,23 @@ func HandleUpload(cfg *Config) http.HandlerFunc {
 			return
 		}
 
-		// Batasi ukuran upload 200MB
+		// Batasi ukuran upload 200MB (#14: tangkap error 413 dengan pesan ramah)
 		r.Body = http.MaxBytesReader(w, r.Body, 200<<20)
 
-		relPath := r.URL.Query().Get("path")
-		absRoot, _ := filepath.Abs(cfg.SharedFolder)
-		targetDir := filepath.Join(absRoot, filepath.FromSlash(relPath))
-		targetDir = filepath.Clean(targetDir)
-
-		if !strings.HasPrefix(targetDir+string(filepath.Separator), absRoot+string(filepath.Separator)) {
-			if targetDir != absRoot {
-				writeJSON(w, http.StatusBadRequest, map[string]string{"error": "path tidak diizinkan"})
-				return
-			}
+		targetDir, ok := resolveSafeOrRespond(w, cfg.SharedFolder, r.URL.Query().Get("path"))
+		if !ok {
+			return
 		}
 
 		if err := r.ParseMultipartForm(200 << 20); err != nil {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "gagal parse form: " + err.Error()})
+			// Deteksi request body too large → pesan ramah
+			if strings.Contains(err.Error(), "too large") {
+				writeJSON(w, http.StatusRequestEntityTooLarge, map[string]string{
+					"error": "Ukuran file melebihi batas 200 MB",
+				})
+				return
+			}
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "gagal memproses form upload"})
 			return
 		}
 
@@ -195,7 +229,10 @@ func HandleUpload(cfg *Config) http.HandlerFunc {
 
 		// Sanitasi nama file: hanya ambil base name
 		safeName := filepath.Base(header.Filename)
-		destPath := filepath.Join(targetDir, safeName)
+
+		// Hindari overwrite file existing (#3): cari nama unik
+		destPath := uniqueDestPath(targetDir, safeName)
+		finalName := filepath.Base(destPath)
 
 		dst, err := os.Create(destPath)
 		if err != nil {
@@ -209,7 +246,7 @@ func HandleUpload(cfg *Config) http.HandlerFunc {
 			return
 		}
 
-		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "name": safeName})
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "name": finalName})
 	}
 }
 
@@ -231,16 +268,30 @@ func HandleLogin(pinEnabled bool) http.HandlerFunc {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "body tidak valid"})
 			return
 		}
-		if !ValidatePIN(body.PIN) {
+
+		valid, locked, retryAfter := ValidatePIN(body.PIN)
+		if locked {
+			writeJSON(w, http.StatusTooManyRequests, map[string]any{
+				"error":       "Terlalu banyak percobaan. Coba lagi dalam beberapa menit.",
+				"retry_after": int(retryAfter.Seconds()),
+			})
+			return
+		}
+		if !valid {
 			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "PIN salah"})
 			return
 		}
-		token := CreateToken()
+
+		token, err := CreateToken()
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "gagal membuat sesi"})
+			return
+		}
 		http.SetCookie(w, &http.Cookie{
 			Name:     "auth",
 			Value:    token,
 			Path:     "/",
-			MaxAge:   86400, // 24 jam
+			MaxAge:   int(tokenTTL.Seconds()),
 			HttpOnly: true,
 			SameSite: http.SameSiteLaxMode,
 		})

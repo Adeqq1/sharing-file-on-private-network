@@ -17,3 +17,6 @@ Thumbs.db
 
 # Env / secrets
 .env
+
+# Config lokal (machine-specific) — gunakan config.example.json sebagai template
+config.json

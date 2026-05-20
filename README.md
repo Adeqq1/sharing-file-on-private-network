@@ -83,9 +83,30 @@ Tekan Ctrl+C untuk menghentikan server.
 
 1. Pastikan HP terhubung ke WiFi yang sama dengan laptop.
 2. Buka browser di HP, ketik URL `http://192.168.x.x:8080` (sesuai output di console).
-3. Saat pertama jalan, **Windows akan menampilkan dialog firewall**. Klik **Allow access** (centang Private network).
+3. **Buka akses firewall** — lihat langkah berikutnya di bawah.
 
 > Jika halaman tidak terbuka, lihat bagian [Troubleshooting](#-troubleshooting) di bawah.
+
+### 7. Setup Firewall (penting, dilakukan sekali saja)
+
+Secara default, Windows akan **memblokir koneksi masuk** dari device lain ke port 8080. Ada dua cara:
+
+**Cara A — pakai script (direkomendasikan):**
+
+1. Klik kanan file `setup-firewall.ps1` → **Run with PowerShell**.
+2. Klik **Yes** saat dialog UAC muncul (script butuh admin).
+3. Selesai. Rule firewall otomatis dibuat untuk port 8080.
+
+**Cara B — manual via dialog Windows:**
+
+1. Saat pertama kali jalan `go run main.go`, Windows menampilkan dialog **"Windows Defender Firewall has blocked some features"**.
+2. Centang **Private networks** (jangan centang Public).
+3. Klik **Allow access**.
+
+Kalau dialog tidak muncul (kelewat di-cancel), pakai Cara A atau buat rule manual:
+```cmd
+netsh advfirewall firewall add rule name="LAN Hub" dir=in action=allow protocol=TCP localport=8080
+```
 
 ---
 
@@ -197,14 +218,22 @@ LAN Hub dirancang untuk pemakaian rumah/kantor pribadi, bukan untuk diekspos ke 
 
 ## 🧰 Troubleshooting
 
-### "Connection refused" saat akses dari HP
-- Pastikan laptop dan HP di **WiFi yang sama**.
-- Cek firewall Windows: buka **Windows Defender Firewall** → **Allow an app** → cari "Go" atau executable kamu, pastikan **Private network** dicentang.
-- Coba ping dari HP: install app "Network Tools", ping ke IP laptop.
+### IP yang muncul `169.254.x.x` (APIPA)
+Itu IP **fallback Windows** yang muncul ketika laptop **tidak dapat IP dari router** (DHCP gagal). Penyebab umum:
+- Laptop sebenarnya tidak terhubung WiFi/Ethernet.
+- WiFi terhubung tapi router-nya tidak memberi IP (coba reconnect WiFi).
+- Go salah pilih adapter virtual (VirtualBox, VMware, Hyper-V) yang tidak terhubung ke router.
 
-### IP LAN tidak terdeteksi (muncul `127.0.0.1` atau kosong)
-- Mungkin laptop tidak terhubung WiFi/Ethernet.
-- Cek manual via cmd: `ipconfig` → cari "IPv4 Address" di adapter aktif.
+**Solusi:**
+1. Cek manual di cmd: `ipconfig` → lihat baris **IPv4 Address** di adapter "Wi-Fi" atau "Ethernet". Pastikan formatnya `192.168.x.x` atau `10.x.x.x`.
+2. Jika IPv4 di WiFi adapter tetap `169.254.x.x`, disconnect lalu reconnect WiFi.
+3. Jika Go masih salah pilih adapter walaupun IPv4 sudah benar, restart server (`Ctrl+C` lalu `go run main.go` lagi). Sejak versi terbaru, virtual adapter otomatis di-skip.
+
+### "Connection refused" / "This site can't be reached" dari HP
+- Pastikan laptop dan HP di **WiFi yang sama**. Coba ping IP laptop dari HP (pakai app Network Tools).
+- Cek **firewall** — jalankan `setup-firewall.ps1` sebagai admin (lihat [Quick Start step 7](#7-setup-firewall-penting-dilakukan-sekali-saja)).
+- Beberapa router WiFi punya **AP isolation** yang memblokir komunikasi antar device. Cek setting router, matikan "Client Isolation" atau "AP Isolation".
+- Antivirus pihak ketiga (Avast, Kaspersky, dll) kadang punya firewall sendiri. Tambah pengecualian untuk port 8080.
 
 ### Port 8080 sudah dipakai
 - Ubah `port` di `config.json` ke port lain (misal `8081`, `9000`).
@@ -267,6 +296,7 @@ project-lan-serverPrivate/
 ├── main.go                       # Entry point + graceful shutdown
 ├── config.json                   # Konfigurasi (gitignored)
 ├── config.example.json           # Template config (di-commit)
+├── setup-firewall.ps1            # Script setup firewall (run sebagai admin)
 ├── go.mod                        # Go module (zero dependency eksternal)
 ├── internal/
 │   ├── apps/apps.go              # Filter aplikasi by extension

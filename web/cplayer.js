@@ -22,6 +22,7 @@ const cplayer = {
     queueItems: [],          // daftar video di folder yang sama
     queueIndex: -1,
     rafId: null,
+    fsTransition: false,     // flag anti race-condition: true saat requestFullscreen sedang pending
   },
   abort: null, // AbortController untuk listener per-video
 };
@@ -771,19 +772,34 @@ function togglePlayPause() {
   }
 }
 
-function toggleFullscreen() {
+// Refactor ke async/await agar konsisten — tidak ada double-wrap Promise.
+// Flag fsTransition mencegah race condition saat user double-tap tombol
+// fullscreen sebelum requestFullscreen() selesai (review 1.1 + 1.4).
+async function toggleFullscreen() {
   if (!cplayer.dom.container) return;
+
+  // Guard: abaikan klik berikutnya selama transisi fullscreen sedang berjalan.
+  if (cplayer.state.fsTransition) return;
+
   if (document.fullscreenElement) {
     // Exit: unlock orientasi dulu, lalu keluar fullscreen.
     unlockOrientation();
-    document.exitFullscreen().catch(() => {});
+    try {
+      await document.exitFullscreen();
+    } catch (_) { /* abaikan — browser mungkin sudah keluar fullscreen */ }
   } else {
-    // Enter: requestFullscreen() return Promise.
-    // Lock orientasi SETELAH fullscreen aktif — screen.orientation.lock()
-    // akan error kalau dipanggil sebelum fullscreen benar-benar aktif.
-    cplayer.dom.container.requestFullscreen()
-      .then(() => lockLandscape())
-      .catch(() => {});
+    // Enter: set flag dulu agar klik ganda tidak memicu requestFullscreen kedua.
+    cplayer.state.fsTransition = true;
+    try {
+      await cplayer.dom.container.requestFullscreen();
+      // Lock orientasi SETELAH fullscreen aktif — screen.orientation.lock()
+      // akan error kalau dipanggil sebelum fullscreen benar-benar aktif.
+      await lockLandscape();
+    } catch (_) { /* abaikan — user mungkin cancel atau browser tidak support */ }
+    finally {
+      // Selalu reset flag setelah selesai (berhasil atau gagal).
+      cplayer.state.fsTransition = false;
+    }
 
     // Hint untuk iOS Safari yang tidak support screen.orientation.lock.
     // Tampilkan sekali per session agar tidak mengganggu.
@@ -1016,6 +1032,7 @@ function resetCplayer() {
   cplayer.state.lastTap = 0;
   cplayer.state.queueItems = [];
   cplayer.state.queueIndex = -1;
+  cplayer.state.fsTransition = false; // reset flag transisi fullscreen
 }
 
 // Setter untuk app.js

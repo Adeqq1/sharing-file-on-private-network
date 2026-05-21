@@ -40,7 +40,9 @@ var formats = map[string]formatInfo{
 
 	// ── Native-only (browser tidak bisa, tapi app HP bisa) ──
 	// Video
-	"mkv": {KindVideo, "video/x-matroska", false, true},
+	// MKV: Chrome/Firefox support H.264+AAC di dalam container MKV.
+	// Browser yang tidak support akan emit error → player tampilkan tombol download.
+	"mkv": {KindVideo, "video/x-matroska", true, true},
 	"avi": {KindVideo, "video/x-msvideo", false, true},
 	"wmv": {KindVideo, "video/x-ms-wmv", false, true},
 	"flv": {KindVideo, "video/x-flv", false, true},

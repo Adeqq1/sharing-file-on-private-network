@@ -7,6 +7,20 @@
 // Arsitektur: WebRTC P2P dengan Go server sebagai signaling relay (SSE + POST).
 // Server TIDAK handle media — hanya relay SDP offer/answer dan ICE candidates.
 
+// Polyfill UUID — crypto.randomUUID() butuh secure context (HTTPS/localhost).
+// Di akses LAN via HTTP, beberapa browser HP tidak menyediakan API ini.
+function genUUID() {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    try { return crypto.randomUUID(); } catch (_) {}
+  }
+  // Fallback RFC4122-like (cukup untuk peer ID, bukan kriptografi)
+  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, c => {
+    const r = (Math.random() * 16) | 0;
+    const v = c === 'x' ? r : (r & 0x3) | 0x8;
+    return v.toString(16);
+  });
+}
+
 const liveState = {
   pc: new Map(),        // viewerId -> RTCPeerConnection (broadcaster side)
   stream: null,         // MediaStream aktif
@@ -157,7 +171,7 @@ async function startBroadcast(source) {
     }
 
     liveState.stream = stream;
-    liveState.peerId = 'b_' + crypto.randomUUID();
+    liveState.peerId = 'b_' + genUUID();
     liveState.role = 'broadcaster';
     liveState.isLive = true;
     liveState.startTime = Date.now();
@@ -317,7 +331,7 @@ function stopBroadcast() {
 
 // ===== Viewer Logic =====
 async function startWatching() {
-  liveState.peerId = 'v_' + crypto.randomUUID();
+  liveState.peerId = 'v_' + genUUID();
   liveState.role = 'viewer';
 
   const pc = new RTCPeerConnection({ iceServers: [] });

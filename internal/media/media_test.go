@@ -37,8 +37,10 @@ func TestKindForBrowser(t *testing.T) {
 		// Browser-friendly → harus return Kind
 		{"mp4", KindVideo}, {"webm", KindVideo}, {"mov", KindVideo},
 		{"mp3", KindAudio}, {"m4a", KindAudio}, {"wav", KindAudio},
-		// Native-only → harus return KindUnsupported (browser tidak bisa)
-		{"mkv", KindUnsupported}, {"avi", KindUnsupported}, {"wmv", KindUnsupported},
+		// MKV: Chrome/Firefox support H.264+AAC — dicoba di browser, fallback ke download jika error
+		{"mkv", KindVideo},
+		// Format lain yang masih native-only → harus return KindUnsupported
+		{"avi", KindUnsupported}, {"wmv", KindUnsupported},
 		{"flac", KindUnsupported}, {"wma", KindUnsupported},
 		// Tidak dikenal
 		{"txt", KindUnsupported}, {"", KindUnsupported},

@@ -4,9 +4,22 @@ import (
 	"fmt"
 	"lan-server/internal/live"
 	"log"
+	"mime"
 	"net/http"
 	"time"
 )
+
+// init mendaftarkan MIME type secara eksplisit agar tidak bergantung pada
+// registry OS (Windows kadang tidak punya entry untuk .js / .css).
+func init() {
+	mime.AddExtensionType(".js", "application/javascript; charset=utf-8")
+	mime.AddExtensionType(".mjs", "application/javascript; charset=utf-8")
+	mime.AddExtensionType(".css", "text/css; charset=utf-8")
+	mime.AddExtensionType(".html", "text/html; charset=utf-8")
+	mime.AddExtensionType(".svg", "image/svg+xml")
+	mime.AddExtensionType(".json", "application/json; charset=utf-8")
+	mime.AddExtensionType(".vtt", "text/vtt; charset=utf-8")
+}
 
 // New membuat http.Handler dengan semua route terdaftar.
 func New(cfg *Config) http.Handler {

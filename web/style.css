@@ -647,6 +647,46 @@ body {
   .file-item { padding: 12px 16px; }
 }
 
+/* ===== Tombol Rotate Layar (hanya HP/tablet) ===== */
+
+/* Sembunyikan di desktop — hanya tampil di touch device */
+.cplayer-rotate-btn { display: none; }
+@media (pointer: coarse) {
+  .cplayer-rotate-btn { display: inline-flex; }
+}
+/* Aktif state: tombol menyala saat rotate mode on */
+.cplayer-rotate-btn.active { color: var(--primary); }
+
+/* ===== CSS Rotate Mode (putar player 90° tanpa fullscreen API) ===== */
+
+/* Saat mode rotate aktif, player container diputar 90° dan di-stretch
+   agar memenuhi viewport secara landscape.
+   Rumus: setelah rotate 90°, width asli jadi height dan sebaliknya.
+   Pakai 100dvh sebagai width baru dan 100dvw sebagai height baru. */
+.cplayer.css-rotated {
+  position: fixed;
+  /* Posisi tengah viewport */
+  top: 50%;
+  left: 50%;
+  /* Swap dimensi: setelah rotate 90°, lebar = tinggi viewport, tinggi = lebar viewport */
+  width: 100dvh;
+  height: 100dvw;
+  /* Geser ke tengah berdasarkan dimensi yang sudah di-swap */
+  margin-top: calc(-50dvw);
+  margin-left: calc(-50dvh);
+  transform: rotate(90deg);
+  transform-origin: center center;
+  /* Pastikan di atas semua elemen lain termasuk player-overlay (z-index 300) */
+  z-index: 400;
+  /* Transisi halus saat masuk/keluar rotate mode */
+  transition: transform .3s ease;
+}
+
+/* Cegah scroll body saat rotate mode aktif */
+body.cp-rotated-active {
+  overflow: hidden;
+}
+
 /* ===== Live Stream UI ===== */
 .live-container { padding: 16px; }
 .live-idle, .live-active, .live-watch {

@@ -13,6 +13,7 @@ Web service ringan berbasis **Go native** (zero dependency eksternal) untuk berb
 | 📁 **Browse file** | Jelajahi folder yang di-share langsung dari HP, dengan breadcrumb dan search |
 | 🖥️ **Open With** | Klik file di HP, pilih aplikasi, file langsung dibuka di laptop (VLC, Notepad, dll) |
 | 📺 **Streaming di HP** | Putar video & audio langsung di browser HP tanpa download (MP4, WebM, MP3, M4A, OGG) |
+| 📲 **Buka di App HP** | Stream MKV/AVI/FLAC ke VLC, MX Player, dll lewat playlist .m3u |
 | ⬇️ **Download** | Download file dari laptop ke HP dengan satu tap |
 | ⬆️ **Upload** | Upload file dari HP ke laptop, batas 200 MB per file |
 | 🔒 **PIN opsional** | PIN 4 digit acak per sesi, dengan rate limit anti brute-force |
@@ -216,8 +217,31 @@ LAN Hub dirancang untuk pemakaian rumah/kantor pribadi, bukan untuk diekspos ke 
 4. Seek bar bisa di-drag untuk skip ke posisi tertentu.
 5. Tap **✕** atau tombol back HP untuk menutup player.
 
-> **Format yang bisa di-stream**: MP4 (H.264), WebM, MP3, M4A, AAC, OGG, WAV.
-> Format lain (MKV, AVI, FLAC, WMV) tidak bisa di-stream langsung — gunakan opsi Download atau Open With laptop.
+> **Format yang bisa di-stream di browser**: MP4 (H.264), WebM, MOV, MP3, M4A, AAC, OGG, WAV.
+> Format lain (MKV, AVI, FLAC, WMV) tidak bisa di-stream di browser — gunakan opsi "Buka dengan App di HP".
+
+### Buka file di app native HP (VLC, MX Player, dll)
+
+Untuk format yang tidak bisa di-browser (MKV, AVI, FLAC), atau jika ingin pakai fitur app (subtitle otomatis, codec lengkap, background play):
+
+1. Tap file di list.
+2. Tap **📲 Buka dengan App di HP**.
+3. Pilih cara:
+   - **Download Playlist .m3u** — paling reliable. File kecil ter-download, buka pakai app pilihan, stream langsung dari laptop.
+   - **Bagikan link** — pakai dialog Share native HP. Hanya muncul di Chrome/Safari.
+   - **Salin link stream** — paste di kolom URL app media player.
+
+**Format yang didukung:**
+
+| Tipe | Browser HP | App Native HP |
+|---|:---:|:---:|
+| MP4, M4V, WebM, MOV | ✅ | ✅ |
+| MP3, M4A, AAC, OGG, WAV | ✅ | ✅ |
+| MKV, AVI, WMV, FLV, TS | ❌ | ✅ |
+| FLAC, WMA | ❌ | ✅ |
+| PDF, ZIP, dll | ❌ | ❌ (download saja) |
+
+**Apps yang sudah dites:** VLC for Android/iOS, MX Player Pro, nPlayer, KMPlayer Mobile, Poweramp.
 
 ### Login dengan PIN (jika diaktifkan)
 1. Saat server start, PIN 4 digit acak akan tercetak di console laptop.
@@ -262,6 +286,9 @@ Itu IP **fallback Windows** yang muncul ketika laptop **tidak dapat IP dari rout
 
 ### Saya lupa PIN
 - PIN digenerate ulang setiap kali server di-restart. Stop server (Ctrl+C), jalankan lagi, PIN baru akan tercetak.
+
+### Tombol "Salin link" tidak menyalin apapun
+Beberapa browser (Firefox, Brave) memblokir `navigator.clipboard` di HTTP non-secure. LAN Hub akan otomatis tampilkan modal manual — tap textarea, pilih semua teks, lalu copy seperti biasa.
 
 ---
 

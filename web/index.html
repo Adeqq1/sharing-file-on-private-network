@@ -84,6 +84,46 @@
       </div>
     </div>
 
+    <!-- Sub-Modal "Buka dengan App di HP" -->
+    <div id="hp-apps-overlay" class="modal-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="hp-apps-title">
+      <div class="modal">
+        <div class="modal-header">
+          <h2 id="hp-apps-title">Buka dengan App di HP</h2>
+          <button id="hp-apps-close" class="icon-btn" aria-label="Tutup">✕</button>
+        </div>
+        <p id="hp-apps-filename" class="modal-filename"></p>
+        <div class="modal-apps" id="hp-apps-list">
+          <!-- Download .m3u — selalu tampil -->
+          <button class="app-btn" data-action="playlist">
+            <span class="app-btn-icon">📥</span>
+            <div class="app-btn-text">
+              <div class="app-btn-title">Download Playlist .m3u</div>
+              <div class="app-btn-desc">Universal — buka di VLC, MX Player, nPlayer, dll</div>
+            </div>
+          </button>
+          <!-- Share — hanya tampil jika Web Share API tersedia -->
+          <button class="app-btn hidden" id="btn-hp-share" data-action="share">
+            <span class="app-btn-icon">↗</span>
+            <div class="app-btn-text">
+              <div class="app-btn-title">Bagikan link stream</div>
+              <div class="app-btn-desc">Kirim ke app lain di HP via dialog share</div>
+            </div>
+          </button>
+          <!-- Copy link — selalu tampil -->
+          <button class="app-btn" data-action="copy">
+            <span class="app-btn-icon">📋</span>
+            <div class="app-btn-text">
+              <div class="app-btn-title">Salin link stream</div>
+              <div class="app-btn-desc">Paste di kolom URL app media player</div>
+            </div>
+          </button>
+        </div>
+        <p class="hp-apps-tip">
+          💡 Untuk MKV, AVI, FLAC — gunakan opsi ini. App native bisa memutar codec yang browser tidak bisa.
+        </p>
+      </div>
+    </div>
+
     <!-- Player Modal (streaming video/audio) -->
     <div id="player-overlay" class="player-overlay hidden" role="dialog" aria-modal="true" aria-label="Media player">
       <div class="player-header">

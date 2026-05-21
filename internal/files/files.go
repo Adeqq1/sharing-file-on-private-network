@@ -3,6 +3,7 @@ package files
 import (
 	"errors"
 	"fmt"
+	"lan-server/internal/media"
 	"os"
 	"path/filepath"
 	"strings"
@@ -14,11 +15,12 @@ var ErrPathNotAllowed = errors.New("path tidak diizinkan")
 
 // Item merepresentasikan satu entri file atau folder.
 type Item struct {
-	Name    string    `json:"name"`
-	IsDir   bool      `json:"is_dir"`
-	Size    int64     `json:"size"`
-	ModTime time.Time `json:"mod_time"`
-	Ext     string    `json:"ext"`
+	Name       string    `json:"name"`
+	IsDir      bool      `json:"is_dir"`
+	Size       int64     `json:"size"`
+	ModTime    time.Time `json:"mod_time"`
+	Ext        string    `json:"ext"`
+	Streamable string    `json:"streamable"` // "video", "audio", atau "" (tidak bisa di-stream)
 }
 
 // ListResult adalah response dari listing folder.
@@ -87,11 +89,12 @@ func List(sharedRoot, relPath string) (*ListResult, error) {
 			ext = strings.ToLower(strings.TrimPrefix(filepath.Ext(e.Name()), "."))
 		}
 		items = append(items, Item{
-			Name:    e.Name(),
-			IsDir:   e.IsDir(),
-			Size:    info.Size(),
-			ModTime: info.ModTime(),
-			Ext:     ext,
+			Name:       e.Name(),
+			IsDir:      e.IsDir(),
+			Size:       info.Size(),
+			ModTime:    info.ModTime(),
+			Ext:        ext,
+			Streamable: string(media.KindOf(ext)),
 		})
 	}
 

@@ -5,8 +5,8 @@
   "apps": [
     {
       "id": "vlc",
-      "name": "VLC Media Player",
-      "exec": "C:\\Program Files\\VideoLAN\\VLC\\vlc.exe",
+      "name": "KMPlayer 64bit",
+      "exec": "C:\\KMPlayer 64X\\KMPlayer64.exe",
       "extensions": ["mp4", "mkv", "avi", "mov", "mp3", "flac", "wav", "aac"]
     },
     {

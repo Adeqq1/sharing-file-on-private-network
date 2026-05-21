@@ -10,35 +10,28 @@ const state = {
 
 // ===== DOM refs =====
 const $ = (id) => document.getElementById(id);
-const loginScreen  = $('login-screen');
-const appEl        = $('app');
-const fileList     = $('file-list');
-const spinner      = $('spinner');
-const errorBox     = $('error-box');
-const emptyMsg     = $('empty-msg');
-const breadcrumb   = $('breadcrumb');
-const searchInput  = $('search-input');
-const modalOverlay = $('modal-overlay');
-const modalApps    = $('modal-apps');
-const modalFilename= $('modal-filename');
-const btnDownload  = $('btn-download');
-const toast        = $('toast');
-const uploadInput  = $('upload-input');
+const loginScreen   = $('login-screen');
+const appEl         = $('app');
+const fileList      = $('file-list');
+const spinner       = $('spinner');
+const errorBox      = $('error-box');
+const emptyMsg      = $('empty-msg');
+const breadcrumb    = $('breadcrumb');
+const searchInput   = $('search-input');
+const modalOverlay  = $('modal-overlay');
+const modalApps     = $('modal-apps');
+const modalFilename = $('modal-filename');
+const btnDownload   = $('btn-download');
+const toast         = $('toast');
+const uploadInput   = $('upload-input');
 
 // ===== Emoji icons =====
 const EXT_ICONS = {
-  // Video
-  mp4: '🎬', mkv: '🎬', avi: '🎬', mov: '🎬', wmv: '🎬', flv: '🎬', webm: '🎬',
-  // Audio
-  mp3: '🎵', flac: '🎵', wav: '🎵', aac: '🎵', ogg: '🎵', m4a: '🎵',
-  // Image
+  mp4: '🎬', mkv: '🎬', avi: '🎬', mov: '🎬', wmv: '🎬', flv: '🎬', webm: '🎬',  mp3: '🎵', flac: '🎵', wav: '🎵', aac: '🎵', ogg: '🎵', m4a: '🎵',
   jpg: '🖼️', jpeg: '🖼️', png: '🖼️', gif: '🖼️', bmp: '🖼️', webp: '🖼️', svg: '🖼️',
-  // Document
   pdf: '📕', doc: '📝', docx: '📝', xls: '📊', xlsx: '📊', ppt: '📊', pptx: '📊',
   txt: '📄', md: '📄', log: '📄', csv: '📄',
-  // Archive
   zip: '🗜️', rar: '🗜️', '7z': '🗜️', tar: '🗜️', gz: '🗜️',
-  // Code
   js: '💻', ts: '💻', go: '💻', py: '💻', html: '💻', css: '💻', json: '💻',
 };
 
@@ -62,11 +55,24 @@ function formatDate(iso) {
   return d.toLocaleDateString('id-ID', { day: '2-digit', month: 'short', year: 'numeric' });
 }
 
+function escapeHtml(str) {
+  return String(str)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+// ===== Path helper =====
+// Menggabungkan currentPath + nama file menjadi relative path untuk API.
+function filePathOf(item) {
+  return state.currentPath ? state.currentPath + '/' + item.name : item.name;
+}
+
 // ===== API helpers =====
 async function apiFetch(url, options = {}) {
   const res = await fetch(url, options);
   if (res.status === 401) {
-    // Session expired, reload ke login
     location.reload();
     throw new Error('Unauthorized');
   }
@@ -106,13 +112,11 @@ async function loadFiles(relPath = '') {
 function renderFiles(items) {
   fileList.innerHTML = '';
 
-  // Filter berdasarkan search
   const q = state.searchQuery.toLowerCase();
   const filtered = q
     ? items.filter(i => i.name.toLowerCase().includes(q))
     : items;
 
-  // Urutkan: folder dulu, lalu file, keduanya alphabetical
   filtered.sort((a, b) => {
     if (a.is_dir !== b.is_dir) return a.is_dir ? -1 : 1;
     return a.name.localeCompare(b.name, 'id');
@@ -134,10 +138,15 @@ function renderFiles(items) {
       ? 'Folder'
       : [formatSize(item.size), formatDate(item.mod_time)].filter(Boolean).join(' · ');
 
+    // Badge "streamable" di sebelah nama file
+    const streamBadge = item.streamable
+      ? `<span class="stream-badge">${item.streamable === 'video' ? '▶ Video' : '♪ Audio'}</span>`
+      : '';
+
     li.innerHTML = `
       <span class="file-icon" aria-hidden="true">${getIcon(item)}</span>
       <div class="file-info">
-        <div class="file-name">${escapeHtml(item.name)}</div>
+        <div class="file-name">${escapeHtml(item.name)}${streamBadge}</div>
         <div class="file-meta">${escapeHtml(meta)}</div>
       </div>
       <span class="file-arrow" aria-hidden="true">${item.is_dir ? '›' : '⋯'}</span>
@@ -145,10 +154,7 @@ function renderFiles(items) {
 
     li.addEventListener('click', () => {
       if (item.is_dir) {
-        const newPath = state.currentPath
-          ? state.currentPath + '/' + item.name
-          : item.name;
-        loadFiles(newPath);
+        loadFiles(state.currentPath ? state.currentPath + '/' + item.name : item.name);
       } else {
         openFileModal(item);
       }
@@ -212,17 +218,44 @@ async function openFileModal(item) {
     const appList = await res.json();
 
     modalApps.innerHTML = '';
-    if (!appList || appList.length === 0) {
-      modalApps.innerHTML = '<p style="color:var(--text-muted);font-size:.9rem">Tidak ada aplikasi terdaftar.</p>';
-      return;
+
+    // ── Tombol "Putar di HP" (hanya untuk file streamable) ──
+    if (item.streamable) {
+      const streamBtn = document.createElement('button');
+      streamBtn.className = 'btn-stream';
+      const icon = item.streamable === 'video' ? '▶' : '♪';
+      const label = item.streamable === 'video' ? 'Putar Video di HP' : 'Putar Audio di HP';
+      streamBtn.innerHTML = `<span class="btn-stream-icon">${icon}</span><span>${label}</span>`;
+      streamBtn.addEventListener('click', () => {
+        closeModal();
+        openPlayer(item);
+      });
+      modalApps.appendChild(streamBtn);
+
+      // Divider
+      const divider = document.createElement('div');
+      divider.className = 'modal-divider';
+      const dividerLabel = document.createElement('p');
+      dividerLabel.className = 'modal-divider-label';
+      dividerLabel.textContent = 'Atau buka di laptop:';
+      modalApps.appendChild(divider);
+      modalApps.appendChild(dividerLabel);
     }
 
-    for (const app of appList) {
-      const btn = document.createElement('button');
-      btn.className = 'app-btn';
-      btn.innerHTML = `<span class="app-btn-icon">🖥️</span><span>${escapeHtml(app.name)}</span>`;
-      btn.addEventListener('click', () => openWith(app.id, item));
-      modalApps.appendChild(btn);
+    // ── Daftar app laptop ──
+    if (!appList || appList.length === 0) {
+      const p = document.createElement('p');
+      p.style.cssText = 'color:var(--text-muted);font-size:.9rem';
+      p.textContent = 'Tidak ada aplikasi terdaftar.';
+      modalApps.appendChild(p);
+    } else {
+      for (const app of appList) {
+        const btn = document.createElement('button');
+        btn.className = 'app-btn';
+        btn.innerHTML = `<span class="app-btn-icon">🖥️</span><span>${escapeHtml(app.name)}</span>`;
+        btn.addEventListener('click', () => openWith(app.id, item));
+        modalApps.appendChild(btn);
+      }
     }
   } catch {
     modalApps.innerHTML = '<p style="color:var(--danger)">Gagal memuat daftar aplikasi.</p>';
@@ -231,15 +264,11 @@ async function openFileModal(item) {
 
 async function openWith(appId, item) {
   closeModal();
-  const filePath = state.currentPath
-    ? state.currentPath + '/' + item.name
-    : item.name;
-
   try {
     const res = await apiFetch('/api/open', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ app_id: appId, path: filePath }),
+      body: JSON.stringify({ app_id: appId, path: filePathOf(item) }),
     });
     const data = await res.json();
     if (data.ok) {
@@ -258,13 +287,173 @@ function closeModal() {
   state.selectedFile = null;
 }
 
+// ===== Player (streaming) =====
+const playerOverlay   = $('player-overlay');
+const playerTitle     = $('player-title');
+const playerVideo     = $('player-video');
+const playerAudioWrap = $('player-audio-wrap');
+const playerAudio     = $('player-audio');
+const playerAudioTitle= $('player-audio-title');
+const playerSpinner   = $('player-spinner');
+const playerError     = $('player-error');
+const playerErrorMsg  = $('player-error-msg');
+const playerPip       = $('player-pip');
+
+// Poin #4: AbortController untuk batalkan listener lama saat player dibuka ulang.
+// Mencegah race condition: listener 'error' lama fire saat src di-clear.
+let playerAbort = new AbortController();
+
+function openPlayer(item) {
+  const url = '/api/stream?path=' + encodeURIComponent(filePathOf(item));
+
+  // Batalkan semua listener dari sesi player sebelumnya
+  playerAbort.abort();
+  playerAbort = new AbortController();
+  const sig = playerAbort.signal;
+
+  // Reset semua state player
+  playerVideo.pause();
+  playerAudio.pause();
+  playerVideo.src = '';
+  playerAudio.src = '';
+  playerVideo.classList.add('hidden');
+  playerAudioWrap.classList.add('hidden');
+  playerError.classList.add('hidden');
+  playerSpinner.classList.remove('hidden');
+  playerPip.classList.add('hidden');
+
+  playerTitle.textContent = item.name;
+  playerOverlay.classList.remove('hidden');
+  document.body.style.overflow = 'hidden';
+
+  // Tambah history entry supaya tombol back HP menutup player
+  history.pushState({ player: true }, '');
+
+  if (item.streamable === 'video') {
+    playerVideo.classList.remove('hidden');
+
+    // Tampilkan PiP button jika browser mendukung
+    if (document.pictureInPictureEnabled) {
+      playerPip.classList.remove('hidden');
+    }
+
+    // Pasang listener dengan signal — otomatis di-remove saat playerAbort.abort()
+    playerVideo.addEventListener('canplay', onVideoCanPlay, { once: true, signal: sig });
+    playerVideo.addEventListener('error', onVideoError, { once: true, signal: sig });
+
+    // Poin #14: update PiP button saat user keluar dari PiP
+    playerVideo.addEventListener('leavepictureinpicture', () => {
+      playerPip.textContent = '⧉';
+      playerPip.title = 'Picture in Picture';
+    }, { signal: sig });
+    playerVideo.addEventListener('enterpictureinpicture', () => {
+      playerPip.textContent = '⊡';
+      playerPip.title = 'Keluar Picture in Picture';
+    }, { signal: sig });
+
+    playerVideo.src = url;
+    playerVideo.load();
+
+  } else if (item.streamable === 'audio') {
+    playerAudioTitle.textContent = item.name;
+    playerAudioWrap.classList.remove('hidden');
+
+    // Poin #9: audio juga punya loading state — spinner tetap tampil sampai canplay
+    playerAudio.addEventListener('canplay', onAudioCanPlay, { once: true, signal: sig });
+    playerAudio.addEventListener('error', onAudioError, { once: true, signal: sig });
+
+    playerAudio.src = url;
+    playerAudio.load();
+    playerAudio.play().catch(() => { /* autoplay blocked — user tap play */ });
+  }
+}
+
+function onVideoCanPlay() {
+  playerSpinner.classList.add('hidden');
+  playerVideo.play().catch(() => { /* autoplay blocked */ });
+}
+
+// Poin #10: diagnostic error berdasarkan MediaError.code
+function onVideoError() {
+  playerSpinner.classList.add('hidden');
+  playerVideo.classList.add('hidden');
+  const code = playerVideo.error?.code;
+  let msg;
+  switch (code) {
+    case 1: msg = 'Pemutaran dibatalkan.'; break;                          // MEDIA_ERR_ABORTED
+    case 2: msg = 'Koneksi terputus saat memuat video. Cek WiFi.'; break;  // MEDIA_ERR_NETWORK
+    case 3: msg = 'File rusak atau codec tidak didukung browser ini.'; break; // MEDIA_ERR_DECODE
+    case 4: msg = 'Format video tidak didukung browser ini. Coba download.'; break; // MEDIA_ERR_SRC_NOT_SUPPORTED
+    default: msg = 'Gagal memutar video.';
+  }
+  playerErrorMsg.textContent = msg;
+  playerError.classList.remove('hidden');
+}
+
+// Poin #9: audio canplay handler
+function onAudioCanPlay() {
+  playerSpinner.classList.add('hidden');
+}
+
+// Poin #10: diagnostic error audio
+function onAudioError() {
+  playerAudioWrap.classList.add('hidden');
+  playerSpinner.classList.add('hidden');
+  const code = playerAudio.error?.code;
+  let msg;
+  switch (code) {
+    case 2: msg = 'Koneksi terputus saat memuat audio. Cek WiFi.'; break;
+    case 3: msg = 'File rusak atau codec tidak didukung browser ini.'; break;
+    case 4: msg = 'Format audio tidak didukung browser ini. Coba download.'; break;
+    default: msg = 'Gagal memutar audio.';
+  }
+  playerErrorMsg.textContent = msg;
+  playerError.classList.remove('hidden');
+}
+
+function closePlayer() {
+  // Batalkan semua listener aktif
+  playerAbort.abort();
+  playerAbort = new AbortController();
+
+  playerVideo.pause();
+  playerAudio.pause();
+  playerVideo.src = '';
+  playerAudio.src = '';
+  playerOverlay.classList.add('hidden');
+  document.body.style.overflow = '';
+}
+
+// Tombol close player
+$('player-close').addEventListener('click', () => {
+  closePlayer();
+  if (history.state && history.state.player) history.back();
+});
+
+// Tombol back fisik HP
+window.addEventListener('popstate', () => {
+  if (!playerOverlay.classList.contains('hidden')) {
+    closePlayer();
+  }
+});
+
+// Picture-in-Picture
+playerPip.addEventListener('click', async () => {
+  try {
+    if (document.pictureInPictureElement) {
+      await document.exitPictureInPicture();
+    } else {
+      await playerVideo.requestPictureInPicture();
+    }
+  } catch {
+    showToast('PiP tidak didukung di browser ini', true);
+  }
+});
+
 // ===== Download =====
 function downloadFile(item) {
   if (!item) return;
-  const filePath = state.currentPath
-    ? state.currentPath + '/' + item.name
-    : item.name;
-  const url = '/api/download?path=' + encodeURIComponent(filePath);
+  const url = '/api/download?path=' + encodeURIComponent(filePathOf(item));
   const a = document.createElement('a');
   a.href = url;
   a.download = item.name;
@@ -300,12 +489,12 @@ async function uploadFiles(fileList, targetPath) {
     }
   }
   if (successCount > 0) showToast(`✅ ${successCount} file berhasil diupload`);
+  if (failCount > 0) showToast(`❌ ${failCount} file gagal diupload`, true);
   loadFiles(state.currentPath);
 }
 
 // ===== PIN Login =====
 async function checkAuth() {
-  // Coba akses API; jika 401 tampilkan login
   try {
     const res = await fetch('/api/files?path=');
     if (res.status === 401) {
@@ -352,13 +541,11 @@ async function submitPIN() {
     const data = await res.json();
 
     if (res.status === 429) {
-      // Rate limited
       const secs = data.retry_after || 300;
       const mins = Math.ceil(secs / 60);
       $('pin-error').textContent = `Terlalu banyak percobaan. Coba lagi dalam ${mins} menit.`;
       $('pin-error').classList.remove('hidden');
       digits.forEach(d => { d.value = ''; d.disabled = true; });
-      // Re-enable setelah waktu tunggu
       setTimeout(() => {
         digits.forEach(d => { d.disabled = false; });
         btnLogin.disabled = false;
@@ -409,14 +596,6 @@ function showToast(msg, isError = false) {
   toastTimer = setTimeout(() => toast.classList.add('hidden'), 3000);
 }
 
-function escapeHtml(str) {
-  return String(str)
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;');
-}
-
 // ===== Event listeners =====
 $('btn-refresh').addEventListener('click', () => loadFiles(state.currentPath));
 
@@ -444,7 +623,6 @@ searchInput.addEventListener('input', () => {
   renderFiles(state.allItems);
 });
 
-// PIN digit navigation
 document.querySelectorAll('.pin-digit').forEach((input, idx, all) => {
   input.addEventListener('input', () => {
     if (input.value && idx < all.length - 1) all[idx + 1].focus();
@@ -457,9 +635,14 @@ document.querySelectorAll('.pin-digit').forEach((input, idx, all) => {
 
 $('btn-login').addEventListener('click', submitPIN);
 
-// Keyboard: Escape menutup modal
 document.addEventListener('keydown', (e) => {
-  if (e.key === 'Escape') closeModal();
+  if (e.key === 'Escape') {
+    if (!playerOverlay.classList.contains('hidden')) {
+      closePlayer();
+    } else {
+      closeModal();
+    }
+  }
 });
 
 // ===== Init =====

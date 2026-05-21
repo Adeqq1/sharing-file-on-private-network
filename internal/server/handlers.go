@@ -7,6 +7,7 @@ import (
 	"io"
 	"lan-server/internal/apps"
 	"lan-server/internal/files"
+	"lan-server/internal/media"
 	"net/http"
 	"os"
 	"os/exec"
@@ -146,6 +147,58 @@ func HandleOpen(cfg *Config) http.HandlerFunc {
 		}
 
 		writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+	}
+}
+
+// HandleStream menangani GET /api/stream?path=<relative>
+// Berbeda dengan HandleDownload: TIDAK set Content-Disposition attachment,
+// sehingga browser bisa memutar file langsung (bukan mendownload).
+// http.ServeFile otomatis handle Range request (Accept-Ranges: bytes) untuk seek.
+func HandleStream(cfg *Config) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		// Support GET dan HEAD (HEAD dipakai browser untuk cek metadata sebelum play)
+		if r.Method != http.MethodGet && r.Method != http.MethodHead {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		target, ok := resolveSafeOrRespond(w, cfg.SharedFolder, r.URL.Query().Get("path"))
+		if !ok {
+			return
+		}
+
+		info, err := os.Stat(target)
+		if err != nil {
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": "file tidak ditemukan"})
+			return
+		}
+		if info.IsDir() {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "tidak bisa stream folder"})
+			return
+		}
+		// Poin #2: tolak file 0-byte — browser akan stuck di buffering tanpa pesan jelas
+		if info.Size() == 0 {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "file kosong, tidak bisa di-stream"})
+			return
+		}
+
+		// Set Content-Type eksplisit berdasarkan ekstensi.
+		// Tanpa ini, beberapa browser mobile tidak mau play (terutama audio).
+		ext := strings.ToLower(strings.TrimPrefix(filepath.Ext(info.Name()), "."))
+		if mime := media.MIMEOf(ext); mime != "" {
+			w.Header().Set("Content-Type", mime)
+		}
+
+		// Poin #12: Cache-Control private agar browser cache untuk seek,
+		// tapi tidak di-cache proxy/CDN (file bisa berubah di server).
+		w.Header().Set("Cache-Control", "private, max-age=300")
+
+		// http.ServeFile otomatis:
+		// - Set Accept-Ranges: bytes
+		// - Handle Range request → HTTP 206 Partial Content
+		// - Set Content-Length
+		// - Handle If-Modified-Since / ETag caching
+		http.ServeFile(w, r, target)
 	}
 }
 

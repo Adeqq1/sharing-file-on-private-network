@@ -84,6 +84,41 @@
       </div>
     </div>
 
+    <!-- Player Modal (streaming video/audio) -->
+    <div id="player-overlay" class="player-overlay hidden" role="dialog" aria-modal="true" aria-label="Media player">
+      <div class="player-header">
+        <button id="player-close" class="icon-btn player-close-btn" aria-label="Tutup player">✕</button>
+        <span id="player-title" class="player-title"></span>
+        <button id="player-pip" class="icon-btn player-close-btn pip-btn hidden" aria-label="Picture in picture" title="Picture in Picture">⧉</button>
+      </div>
+      <div class="player-body">
+        <!-- Spinner loading -->
+        <div id="player-spinner" class="player-spinner hidden">
+          <div class="spinner-ring"></div>
+        </div>
+        <!-- Video element -->
+        <video
+          id="player-video"
+          class="player-video hidden"
+          controls
+          playsinline
+          preload="metadata"
+        ></video>
+        <!-- Audio element + artwork -->
+        <div id="player-audio-wrap" class="player-audio-wrap hidden">
+          <div class="player-audio-art">🎵</div>
+          <p id="player-audio-title" class="player-audio-title"></p>
+          <audio id="player-audio" controls preload="metadata"></audio>
+        </div>
+        <!-- Error state -->
+        <div id="player-error" class="player-error hidden">
+          <div class="player-error-icon">⚠️</div>
+          <p id="player-error-msg"></p>
+          <p class="player-error-hint">Coba download file lalu buka di aplikasi media player.</p>
+        </div>
+      </div>
+    </div>
+
     <!-- Toast notification -->
     <div id="toast" class="toast hidden" role="status" aria-live="polite"></div>
   </div>

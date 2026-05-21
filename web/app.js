@@ -348,13 +348,19 @@ function openPlayer(item) {
     playerVideo.addEventListener('error', () => {
       playerSpinner.classList.add('hidden');
       const code = playerVideo.error?.code;
+      const ext = (item.ext || '').toLowerCase();
       let msg;
-      switch (code) {
-        case 1: msg = 'Pemutaran dibatalkan.'; break;
-        case 2: msg = 'Koneksi terputus. Cek WiFi.'; break;
-        case 3: msg = 'File rusak atau codec tidak didukung browser ini.'; break;
-        case 4: msg = 'Format video tidak didukung browser ini.'; break;
-        default: msg = 'Gagal memutar video.';
+      // Pesan khusus untuk format yang mungkin tidak didukung semua browser
+      if (code === 4 && (ext === 'mkv' || ext === 'avi' || ext === 'wmv' || ext === 'flv')) {
+        msg = `Format ${ext.toUpperCase()} tidak didukung browser ini. Coba Chrome Android atau download ke VLC/MX Player.`;
+      } else {
+        switch (code) {
+          case 1: msg = 'Pemutaran dibatalkan.'; break;
+          case 2: msg = 'Koneksi terputus. Cek WiFi.'; break;
+          case 3: msg = 'File rusak atau codec tidak didukung browser ini.'; break;
+          case 4: msg = 'Format video tidak didukung browser ini.'; break;
+          default: msg = 'Gagal memutar video.';
+        }
       }
       if (playerErrorMsg) playerErrorMsg.textContent = msg;
       if (playerError) playerError.classList.remove('hidden');
@@ -489,20 +495,31 @@ async function uploadFiles(files, targetPath) {
 
 // ===== PIN Login =====
 async function checkAuth() {
+  // Pisahkan fetch dari parse agar setiap kondisi selalu menampilkan UI (tidak blank).
+  let res;
   try {
-    const res = await fetch('/api/files?path=');
-    if (res.status === 401) {
-      showLoginScreen();
-    } else {
-      showApp();
-      const data = await res.json();
-      state.allItems = data.items || [];
-      renderBreadcrumb(data.path || '');
-      renderFiles(state.allItems);
-    }
-  } catch {
+    res = await fetch('/api/files?path=');
+  } catch (err) {
+    console.error('checkAuth network error:', err);
     showApp();
     showError('Tidak dapat terhubung ke server.');
+    return;
+  }
+
+  if (res.status === 401) {
+    showLoginScreen();
+    return;
+  }
+
+  showApp();
+  try {
+    const data = await res.json();
+    state.allItems = data.items || [];
+    renderBreadcrumb(data.path || '');
+    renderFiles(state.allItems);
+  } catch (err) {
+    console.error('checkAuth parse error:', err);
+    showError('Response server tidak valid.');
   }
 }
 

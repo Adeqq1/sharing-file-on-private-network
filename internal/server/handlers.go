@@ -9,6 +9,7 @@ import (
 	"lan-server/internal/files"
 	"lan-server/internal/media"
 	"net/http"
+	neturl "net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -200,6 +201,81 @@ func HandleStream(cfg *Config) http.HandlerFunc {
 		// - Handle If-Modified-Since / ETag caching
 		http.ServeFile(w, r, target)
 	}
+}
+
+// HandlePlaylist menangani GET /api/playlist?path=<relative>
+// Men-generate file .m3u berisi URL absolute ke /api/stream.
+// User download file ini lalu buka di app media player HP (VLC, MX Player, dll).
+// App membaca URL dari .m3u dan langsung stream dari server.
+func HandlePlaylist(cfg *Config) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+			return
+		}
+
+		relPath := r.URL.Query().Get("path")
+		target, ok := resolveSafeOrRespond(w, cfg.SharedFolder, relPath)
+		if !ok {
+			return
+		}
+
+		info, err := os.Stat(target)
+		if err != nil {
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": "file tidak ditemukan"})
+			return
+		}
+		if info.IsDir() {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "tidak bisa buat playlist untuk folder"})
+			return
+		}
+		if info.Size() == 0 {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "file kosong"})
+			return
+		}
+
+		// Cek apakah format bisa di-stream (browser atau native)
+		ext := strings.ToLower(strings.TrimPrefix(filepath.Ext(info.Name()), "."))
+		if !media.IsNativePlayable(ext) {
+			writeJSON(w, http.StatusBadRequest, map[string]string{
+				"error": "format tidak didukung untuk streaming",
+			})
+			return
+		}
+
+		// Bangun URL absolute menggunakan r.Host (otomatis berisi IP LAN + port).
+		// Penting: JANGAN pakai "localhost" — app HP tidak tahu apa itu localhost.
+		scheme := "http"
+		if r.TLS != nil {
+			scheme = "https"
+		}
+		streamURL := fmt.Sprintf("%s://%s/api/stream?path=%s",
+			scheme, r.Host, neturl.QueryEscape(relPath))
+
+		// Nama file .m3u yang akan di-download
+		safeBase := sanitizeFilename(info.Name())
+		m3uFilename := safeBase + ".m3u"
+
+		// Headers: paksa download (bukan preview di browser)
+		w.Header().Set("Content-Type", "application/vnd.apple.mpegurl")
+		w.Header().Set("Content-Disposition",
+			fmt.Sprintf(`attachment; filename="%s"`, m3uFilename))
+		w.Header().Set("Cache-Control", "no-cache")
+
+		// Tulis isi .m3u — format Extended M3U
+		fmt.Fprintln(w, "#EXTM3U")
+		fmt.Fprintf(w, "#EXTINF:-1,%s\n", info.Name())
+		fmt.Fprintln(w, streamURL)
+	}
+}
+
+// sanitizeFilename menghapus karakter yang tidak aman untuk nama file di header HTTP.
+func sanitizeFilename(s string) string {
+	replacer := strings.NewReplacer(
+		`"`, "", `\`, "", `/`, "", `:`, "_",
+		`*`, "_", `?`, "_", `<`, "_", `>`, "_", `|`, "_",
+	)
+	return replacer.Replace(s)
 }
 
 // HandleDownload menangani GET /api/download?path=<relative>

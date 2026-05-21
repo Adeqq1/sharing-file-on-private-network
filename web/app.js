@@ -141,7 +141,7 @@ function renderFiles(items) {
     // Badge "streamable" di sebelah nama file
     const streamBadge = item.streamable
       ? `<span class="stream-badge">${item.streamable === 'video' ? '▶ Video' : '♪ Audio'}</span>`
-      : '';
+      : (item.native_play ? `<span class="native-badge">📲 App</span>` : '');
 
     li.innerHTML = `
       <span class="file-icon" aria-hidden="true">${getIcon(item)}</span>
@@ -219,7 +219,7 @@ async function openFileModal(item) {
 
     modalApps.innerHTML = '';
 
-    // ── Tombol "Putar di HP" (hanya untuk file streamable) ──
+    // ── Tombol "Putar di Browser" (hanya untuk file browser-streamable) ──
     if (item.streamable) {
       const streamBtn = document.createElement('button');
       streamBtn.className = 'btn-stream';
@@ -231,8 +231,22 @@ async function openFileModal(item) {
         openPlayer(item);
       });
       modalApps.appendChild(streamBtn);
+    }
 
-      // Divider
+    // ── Tombol "Buka dengan App di HP" (untuk semua file native_play) ──
+    if (item.native_play) {
+      const hpBtn = document.createElement('button');
+      hpBtn.className = 'btn-stream-secondary';
+      hpBtn.innerHTML = '<span class="btn-stream-icon">📲</span><span>Buka dengan App di HP</span>';
+      hpBtn.addEventListener('click', () => {
+        closeModal();
+        openHpAppsModal(item);
+      });
+      modalApps.appendChild(hpBtn);
+    }
+
+    // Divider sebelum daftar app laptop (hanya jika ada tombol stream di atas)
+    if (item.streamable || item.native_play) {
       const divider = document.createElement('div');
       divider.className = 'modal-divider';
       const dividerLabel = document.createElement('p');
@@ -286,6 +300,129 @@ function closeModal() {
   document.body.style.overflow = '';
   state.selectedFile = null;
 }
+
+// ===== Sub-Modal "Buka dengan App di HP" =====
+
+function getStreamUrl(item) {
+  // URL absolute menggunakan location.origin (berisi IP LAN + port saat diakses dari HP)
+  return location.origin + '/api/stream?path=' + encodeURIComponent(filePathOf(item));
+}
+
+function getPlaylistUrl(item) {
+  return '/api/playlist?path=' + encodeURIComponent(filePathOf(item));
+}
+
+function openHpAppsModal(item) {
+  state.selectedFile = item;
+  $('hp-apps-filename').textContent = item.name;
+
+  // Tampilkan tombol Share hanya jika Web Share API tersedia (Chrome/Safari Android/iOS)
+  const shareBtn = $('btn-hp-share');
+  shareBtn.classList.toggle('hidden', !('share' in navigator));
+
+  $('hp-apps-overlay').classList.remove('hidden');
+  document.body.style.overflow = 'hidden';
+}
+
+function closeHpAppsModal() {
+  $('hp-apps-overlay').classList.add('hidden');
+  document.body.style.overflow = '';
+}
+
+async function handleHpAppAction(action, item) {
+  if (action === 'playlist') {
+    // Download file .m3u — user buka di app pilihan
+    const a = document.createElement('a');
+    a.href = getPlaylistUrl(item);
+    a.download = '';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    showToast('📥 Playlist diunduh — buka untuk pilih aplikasi');
+    closeHpAppsModal();
+
+  } else if (action === 'share') {
+    // Web Share API — dialog share native HP
+    try {
+      await navigator.share({
+        title: item.name,
+        text: 'Stream dari LAN Hub',
+        url: getStreamUrl(item),
+      });
+      closeHpAppsModal();
+    } catch (e) {
+      if (e.name !== 'AbortError') {
+        showToast('Gagal berbagi link', true);
+      }
+    }
+
+  } else if (action === 'copy') {
+    const url = getStreamUrl(item);
+    try {
+      await navigator.clipboard.writeText(url);
+      showToast('✅ Link disalin ke clipboard');
+    } catch {
+      // Fallback: navigator.clipboard tidak tersedia di HTTP non-secure
+      showCopyFallbackModal(url);
+    }
+    closeHpAppsModal();
+  }
+}
+
+// Tahap 4: Fallback clipboard untuk browser yang block navigator.clipboard di HTTP
+function showCopyFallbackModal(url) {
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-overlay';
+  overlay.style.zIndex = '500';
+  overlay.innerHTML = `
+    <div class="modal">
+      <div class="modal-header">
+        <h2>Salin Link Manual</h2>
+        <button class="icon-btn" id="copy-fallback-close">✕</button>
+      </div>
+      <p style="font-size:.85rem;color:var(--text-muted);margin-bottom:4px">
+        Browser tidak izinkan auto-copy. Tap teks di bawah, pilih semua, lalu copy:
+      </p>
+      <textarea readonly class="copy-fallback-text">${escapeHtml(url)}</textarea>
+    </div>
+  `;
+  document.body.appendChild(overlay);
+  document.body.style.overflow = 'hidden';
+
+  const textarea = overlay.querySelector('textarea');
+  // Auto-select saat focus (memudahkan user di mobile)
+  textarea.addEventListener('focus', () => {
+    textarea.select();
+    // iOS workaround
+    textarea.setSelectionRange(0, 99999);
+  });
+  // Focus otomatis
+  setTimeout(() => textarea.focus(), 50);
+
+  overlay.querySelector('#copy-fallback-close').addEventListener('click', () => {
+    overlay.remove();
+    document.body.style.overflow = '';
+  });
+  overlay.addEventListener('click', (e) => {
+    if (e.target === overlay) {
+      overlay.remove();
+      document.body.style.overflow = '';
+    }
+  });
+}
+
+// Event listener sub-modal HP apps (delegasi ke data-action)
+$('hp-apps-overlay').addEventListener('click', (e) => {
+  if (e.target === $('hp-apps-overlay')) {
+    closeHpAppsModal();
+    return;
+  }
+  const btn = e.target.closest('[data-action]');
+  if (btn && state.selectedFile) {
+    handleHpAppAction(btn.dataset.action, state.selectedFile);
+  }
+});
+$('hp-apps-close').addEventListener('click', closeHpAppsModal);
 
 // ===== Player (streaming) =====
 const playerOverlay   = $('player-overlay');
@@ -639,6 +776,8 @@ document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape') {
     if (!playerOverlay.classList.contains('hidden')) {
       closePlayer();
+    } else if (!$('hp-apps-overlay').classList.contains('hidden')) {
+      closeHpAppsModal();
     } else {
       closeModal();
     }

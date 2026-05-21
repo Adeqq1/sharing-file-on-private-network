@@ -20,7 +20,8 @@ type Item struct {
 	Size       int64     `json:"size"`
 	ModTime    time.Time `json:"mod_time"`
 	Ext        string    `json:"ext"`
-	Streamable string    `json:"streamable"` // "video", "audio", atau "" (tidak bisa di-stream)
+	Streamable string    `json:"streamable"`  // "video"/"audio" untuk browser HTML5, "" jika tidak bisa
+	NativePlay bool      `json:"native_play"` // true jika bisa di-stream ke app native HP (VLC, MX Player, dll)
 }
 
 // ListResult adalah response dari listing folder.
@@ -94,7 +95,8 @@ func List(sharedRoot, relPath string) (*ListResult, error) {
 			Size:       info.Size(),
 			ModTime:    info.ModTime(),
 			Ext:        ext,
-			Streamable: string(media.KindOf(ext)),
+			Streamable: string(media.KindForBrowser(ext)), // hanya browser-friendly
+			NativePlay: media.IsNativePlayable(ext),       // termasuk MKV/AVI/FLAC
 		})
 	}
 

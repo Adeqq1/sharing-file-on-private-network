@@ -272,9 +272,10 @@ function downloadFile(item) {
 }
 
 // ===== Upload =====
-async function uploadFiles(files, targetPath) {
+async function uploadFiles(fileList, targetPath) {
   let successCount = 0;
-  for (const file of files) {
+  let failCount = 0;
+  for (const file of fileList) {
     const formData = new FormData();
     formData.append('file', file);
     try {
@@ -282,13 +283,23 @@ async function uploadFiles(files, targetPath) {
         '/api/upload?path=' + encodeURIComponent(targetPath),
         { method: 'POST', body: formData }
       );
+      if (res.status === 413) {
+        showToast(`❌ "${file.name}" terlalu besar (maks 200 MB)`, true);
+        failCount++;
+        continue;
+      }
       const data = await res.json();
-      if (data.ok) successCount++;
+      if (data.ok) {
+        successCount++;
+      } else {
+        showToast(`❌ Gagal upload "${file.name}": ${data.error || 'error tidak diketahui'}`, true);
+        failCount++;
+      }
     } catch {
-      // lanjut ke file berikutnya
+      failCount++;
     }
   }
-  showToast(`✅ ${successCount} file berhasil diupload`);
+  if (successCount > 0) showToast(`✅ ${successCount} file berhasil diupload`);
   loadFiles(state.currentPath);
 }
 
@@ -329,6 +340,9 @@ async function submitPIN() {
   const pin = Array.from(digits).map(d => d.value).join('');
   if (pin.length < 4) return;
 
+  const btnLogin = $('btn-login');
+  btnLogin.disabled = true;
+
   try {
     const res = await fetch('/api/login', {
       method: 'POST',
@@ -336,16 +350,38 @@ async function submitPIN() {
       body: JSON.stringify({ pin }),
     });
     const data = await res.json();
+
+    if (res.status === 429) {
+      // Rate limited
+      const secs = data.retry_after || 300;
+      const mins = Math.ceil(secs / 60);
+      $('pin-error').textContent = `Terlalu banyak percobaan. Coba lagi dalam ${mins} menit.`;
+      $('pin-error').classList.remove('hidden');
+      digits.forEach(d => { d.value = ''; d.disabled = true; });
+      // Re-enable setelah waktu tunggu
+      setTimeout(() => {
+        digits.forEach(d => { d.disabled = false; });
+        btnLogin.disabled = false;
+        $('pin-error').classList.add('hidden');
+        digits[0].focus();
+      }, secs * 1000);
+      return;
+    }
+
     if (data.ok) {
       showApp();
       loadFiles('');
     } else {
+      $('pin-error').textContent = 'PIN salah, coba lagi.';
       $('pin-error').classList.remove('hidden');
       digits.forEach(d => { d.value = ''; });
       digits[0].focus();
+      btnLogin.disabled = false;
     }
   } catch {
+    $('pin-error').textContent = 'Tidak dapat terhubung ke server.';
     $('pin-error').classList.remove('hidden');
+    btnLogin.disabled = false;
   }
 }
 

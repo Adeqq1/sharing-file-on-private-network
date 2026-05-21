@@ -1,0 +1,22 @@
+# Binary output
+*.exe
+*.exe~
+lan-hub
+lan-hub.exe
+
+# Go build cache
+/vendor/
+
+# IDE
+.idea/
+*.iml
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Env / secrets
+.env
+
+# Config lokal (machine-specific) — gunakan config.example.json sebagai template
+config.json

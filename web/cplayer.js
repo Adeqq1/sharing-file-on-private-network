@@ -22,6 +22,7 @@ const cplayer = {
     queueItems: [],          // daftar video di folder yang sama
     queueIndex: -1,
     rafId: null,
+    fsTransition: false,     // flag anti race-condition: true saat requestFullscreen sedang pending
   },
   abort: null, // AbortController untuk listener per-video
 };
@@ -159,10 +160,15 @@ function setupVideoEvents() {
     if (cplayer.dom.spinner) cplayer.dom.spinner.classList.add('hidden');
   });
 
-  // Fullscreen change → update ikon
+  // Fullscreen change → update ikon + unlock orientasi saat exit
   document.addEventListener('fullscreenchange', () => {
     updateFullscreenIcon();
     showControls();
+    // Saat keluar fullscreen (via Escape, back button HP, swipe, dll),
+    // pastikan orientasi di-unlock agar HP bisa rotate normal kembali.
+    if (!document.fullscreenElement) {
+      unlockOrientation();
+    }
   });
 }
 
@@ -711,6 +717,51 @@ function setupKeyboardShortcuts() {
 
 // ===== Helpers =====
 
+// ===== Orientation Lock (auto-landscape saat fullscreen di HP) =====
+
+// Deteksi apakah device support orientation lock.
+// Hanya true di HP/tablet dengan touch input — desktop selalu false.
+function canLockOrientation() {
+  try {
+    return (
+      typeof screen !== 'undefined' &&
+      screen.orientation != null &&
+      typeof screen.orientation.lock === 'function' &&
+      window.matchMedia('(pointer: coarse)').matches
+    );
+  } catch (_) {
+    return false;
+  }
+}
+
+// Lock ke landscape — hanya boleh dipanggil saat fullscreen sudah aktif.
+// Kalau gagal (desktop, iOS, user denied), fullscreen tetap jalan normal.
+async function lockLandscape() {
+  if (!canLockOrientation()) return;
+  try {
+    await screen.orientation.lock('landscape');
+  } catch (err) {
+    // Banyak browser lempar error walaupun API ada (mis. desktop, atau user denied).
+    // Tidak masalah — fullscreen tetap jalan, hanya orientasi tidak ter-lock.
+    console.debug('orientation lock gagal:', err.message);
+  }
+}
+
+// Lepas lock orientasi — no-op kalau tidak support atau sudah unlock.
+function unlockOrientation() {
+  try {
+    if (
+      typeof screen !== 'undefined' &&
+      screen.orientation != null &&
+      typeof screen.orientation.unlock === 'function'
+    ) {
+      screen.orientation.unlock();
+    }
+  } catch (_) {
+    // ignore — beberapa browser lempar error saat unlock tanpa lock sebelumnya
+  }
+}
+
 function togglePlayPause() {
   if (!cplayer.video) return;
   if (cplayer.video.paused || cplayer.video.ended) {
@@ -721,12 +772,41 @@ function togglePlayPause() {
   }
 }
 
-function toggleFullscreen() {
+// Refactor ke async/await agar konsisten — tidak ada double-wrap Promise.
+// Flag fsTransition mencegah race condition saat user double-tap tombol
+// fullscreen sebelum requestFullscreen() selesai (review 1.1 + 1.4).
+async function toggleFullscreen() {
   if (!cplayer.dom.container) return;
+
+  // Guard: abaikan klik berikutnya selama transisi fullscreen sedang berjalan.
+  if (cplayer.state.fsTransition) return;
+
   if (document.fullscreenElement) {
-    document.exitFullscreen().catch(() => {});
+    // Exit: unlock orientasi dulu, lalu keluar fullscreen.
+    unlockOrientation();
+    try {
+      await document.exitFullscreen();
+    } catch (_) { /* abaikan — browser mungkin sudah keluar fullscreen */ }
   } else {
-    cplayer.dom.container.requestFullscreen().catch(() => {});
+    // Enter: set flag dulu agar klik ganda tidak memicu requestFullscreen kedua.
+    cplayer.state.fsTransition = true;
+    try {
+      await cplayer.dom.container.requestFullscreen();
+      // Lock orientasi SETELAH fullscreen aktif — screen.orientation.lock()
+      // akan error kalau dipanggil sebelum fullscreen benar-benar aktif.
+      await lockLandscape();
+    } catch (_) { /* abaikan — user mungkin cancel atau browser tidak support */ }
+    finally {
+      // Selalu reset flag setelah selesai (berhasil atau gagal).
+      cplayer.state.fsTransition = false;
+    }
+
+    // Hint untuk iOS Safari yang tidak support screen.orientation.lock.
+    // Tampilkan sekali per session agar tidak mengganggu.
+    if (IS_IOS && !sessionStorage.getItem('cp_rotateHint')) {
+      sessionStorage.setItem('cp_rotateHint', '1');
+      showToastFromPlayer('💡 Putar HP ke samping untuk landscape');
+    }
   }
 }
 
@@ -952,6 +1032,7 @@ function resetCplayer() {
   cplayer.state.lastTap = 0;
   cplayer.state.queueItems = [];
   cplayer.state.queueIndex = -1;
+  cplayer.state.fsTransition = false; // reset flag transisi fullscreen
 }
 
 // Setter untuk app.js

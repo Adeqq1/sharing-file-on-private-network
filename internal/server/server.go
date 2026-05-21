@@ -16,6 +16,7 @@ func New(cfg *Config) http.Handler {
 	mux.HandleFunc("/api/apps", HandleApps(cfg))
 	mux.HandleFunc("/api/open", HandleOpen(cfg))
 	mux.HandleFunc("/api/download", HandleDownload(cfg))
+	mux.HandleFunc("/api/stream", HandleStream(cfg))
 	mux.HandleFunc("/api/upload", HandleUpload(cfg))
 	mux.HandleFunc("/api/login", HandleLogin(cfg.PINEnabled))
 
@@ -33,7 +34,7 @@ func NewServer(cfg *Config) *http.Server {
 		Addr:         Addr(cfg),
 		Handler:      New(cfg),
 		ReadTimeout:  30 * time.Second,
-		WriteTimeout: 60 * time.Second,
+		WriteTimeout: 0, // 0 = no timeout — diperlukan untuk streaming file besar
 		IdleTimeout:  120 * time.Second,
 	}
 }

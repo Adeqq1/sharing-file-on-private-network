@@ -12,6 +12,7 @@ Web service ringan berbasis **Go native** (zero dependency eksternal) untuk berb
 |---|---|
 | 📁 **Browse file** | Jelajahi folder yang di-share langsung dari HP, dengan breadcrumb dan search |
 | 🖥️ **Open With** | Klik file di HP, pilih aplikasi, file langsung dibuka di laptop (VLC, Notepad, dll) |
+| 📺 **Streaming di HP** | Putar video & audio langsung di browser HP tanpa download (MP4, WebM, MP3, M4A, OGG) |
 | ⬇️ **Download** | Download file dari laptop ke HP dengan satu tap |
 | ⬆️ **Upload** | Upload file dari HP ke laptop, batas 200 MB per file |
 | 🔒 **PIN opsional** | PIN 4 digit acak per sesi, dengan rate limit anti brute-force |
@@ -207,6 +208,16 @@ LAN Hub dirancang untuk pemakaian rumah/kantor pribadi, bukan untuk diekspos ke 
 2. Pilih satu atau beberapa file dari HP.
 3. File otomatis di-upload ke folder yang sedang aktif di breadcrumb.
 4. Jika nama file sudah ada di server, otomatis diberi suffix `(1)`, `(2)`, dst.
+
+### Streaming video / audio di HP
+1. Tap file video (`.mp4`, `.webm`) atau audio (`.mp3`, `.m4a`, `.ogg`, `.wav`, `.aac`).
+2. Tap tombol **▶ Putar Video di HP** atau **♪ Putar Audio di HP** di modal.
+3. Player fullscreen muncul, file diputar langsung — tidak perlu download dulu.
+4. Seek bar bisa di-drag untuk skip ke posisi tertentu.
+5. Tap **✕** atau tombol back HP untuk menutup player.
+
+> **Format yang bisa di-stream**: MP4 (H.264), WebM, MP3, M4A, AAC, OGG, WAV.
+> Format lain (MKV, AVI, FLAC, WMV) tidak bisa di-stream langsung — gunakan opsi Download atau Open With laptop.
 
 ### Login dengan PIN (jika diaktifkan)
 1. Saat server start, PIN 4 digit acak akan tercetak di console laptop.

@@ -7,6 +7,7 @@ import (
 	"io"
 	"lan-server/internal/apps"
 	"lan-server/internal/files"
+	"lan-server/internal/media"
 	"net/http"
 	"os"
 	"os/exec"
@@ -146,6 +147,49 @@ func HandleOpen(cfg *Config) http.HandlerFunc {
 		}
 
 		writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+	}
+}
+
+// HandleStream menangani GET /api/stream?path=<relative>
+// Berbeda dengan HandleDownload: TIDAK set Content-Disposition attachment,
+// sehingga browser bisa memutar file langsung (bukan mendownload).
+// http.ServeFile otomatis handle Range request (Accept-Ranges: bytes) untuk seek.
+func HandleStream(cfg *Config) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		// Support GET dan HEAD (HEAD dipakai browser untuk cek metadata sebelum play)
+		if r.Method != http.MethodGet && r.Method != http.MethodHead {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		target, ok := resolveSafeOrRespond(w, cfg.SharedFolder, r.URL.Query().Get("path"))
+		if !ok {
+			return
+		}
+
+		info, err := os.Stat(target)
+		if err != nil {
+			http.Error(w, "file tidak ditemukan", http.StatusNotFound)
+			return
+		}
+		if info.IsDir() {
+			http.Error(w, "tidak bisa stream folder", http.StatusBadRequest)
+			return
+		}
+
+		// Set Content-Type eksplisit berdasarkan ekstensi.
+		// Tanpa ini, beberapa browser mobile tidak mau play (terutama audio).
+		ext := strings.ToLower(strings.TrimPrefix(filepath.Ext(info.Name()), "."))
+		if mime := media.MIMEOf(ext); mime != "" {
+			w.Header().Set("Content-Type", mime)
+		}
+
+		// http.ServeFile otomatis:
+		// - Set Accept-Ranges: bytes
+		// - Handle Range request → HTTP 206 Partial Content
+		// - Set Content-Length
+		// - Handle If-Modified-Since / ETag caching
+		http.ServeFile(w, r, target)
 	}
 }
 

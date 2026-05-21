@@ -18,6 +18,7 @@ func New(cfg *Config) http.Handler {
 	mux.HandleFunc("/api/download", HandleDownload(cfg))
 	mux.HandleFunc("/api/stream", HandleStream(cfg))
 	mux.HandleFunc("/api/subtitle", HandleSubtitle(cfg))
+	mux.HandleFunc("/api/subtitles", HandleSubtitles(cfg))
 	mux.HandleFunc("/api/playlist", HandlePlaylist(cfg))
 	mux.HandleFunc("/api/upload", HandleUpload(cfg))
 	mux.HandleFunc("/api/login", HandleLogin(cfg.PINEnabled))

@@ -476,15 +476,23 @@ body {
   accent-color: var(--primary);
 }
 
-/* Player spinner */
+/* Player spinner — di tengah video (poin #10) */
 .player-spinner {
   position: absolute;
   inset: 0;
   display: flex;
   align-items: center;
   justify-content: center;
-  background: rgba(0,0,0,.4);
-  z-index: 1;
+  background: transparent;
+  pointer-events: none;
+  z-index: 8;
+}
+.player-spinner .spinner-ring {
+  width: 48px;
+  height: 48px;
+  border-width: 4px;
+  border-color: rgba(255,255,255,.3);
+  border-top-color: var(--primary);
 }
 
 /* Player error */
@@ -826,4 +834,150 @@ body {
 @media (min-width: 768px) {
   .cplayer-progress { height: 5px; }
   .cplayer-btn { font-size: 1rem; padding: 8px 12px; }
+}
+
+
+/* ===== Custom Player Polish (YouTube-like) ===== */
+
+/* Center play button - larger, lebih mirip YouTube */
+.cplayer-center-play {
+  width: 84px; height: 84px;
+}
+.cplayer-center-play svg { width: 32px; height: 32px; }
+
+/* Buttons pakai SVG */
+.cplayer-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 6px 8px;
+}
+.cplayer-btn svg {
+  width: 22px;
+  height: 22px;
+  pointer-events: none;
+}
+.cplayer-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+/* Volume control wrap */
+.cplayer-volume-wrap {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.cplayer-volume-slider {
+  width: 0;
+  height: 4px;
+  -webkit-appearance: none;
+  appearance: none;
+  background: rgba(255,255,255,.3);
+  border-radius: 2px;
+  outline: none;
+  transition: width .25s ease, opacity .15s;
+  opacity: 0;
+  cursor: pointer;
+}
+.cplayer-volume-wrap:hover .cplayer-volume-slider,
+.cplayer-volume-wrap:focus-within .cplayer-volume-slider {
+  width: 70px;
+  opacity: 1;
+  margin: 0 8px 0 4px;
+}
+.cplayer-volume-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--primary);
+  cursor: pointer;
+}
+.cplayer-volume-slider::-moz-range-thumb {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--primary);
+  cursor: pointer;
+  border: none;
+}
+
+/* Mobile: tampilkan volume slider lebih lebar default */
+@media (max-width: 767px) {
+  .cplayer-volume-slider { display: none; }
+}
+
+/* Progress wrap untuk hover preview */
+.cplayer-progress-wrap {
+  position: relative;
+  margin-bottom: 8px;
+}
+
+/* Hover time tooltip */
+.cplayer-hover-time {
+  position: absolute;
+  bottom: 16px;
+  background: rgba(0,0,0,.85);
+  color: #fff;
+  font-size: .75rem;
+  padding: 3px 8px;
+  border-radius: 3px;
+  font-variant-numeric: tabular-nums;
+  pointer-events: none;
+  transform: translateX(-50%);
+  white-space: nowrap;
+}
+
+/* Sembunyi di mobile (hover tidak jalan dengan baik) */
+@media (max-width: 767px) {
+  .cplayer-hover-time { display: none; }
+}
+
+/* Settings menu (gear icon) — hierarchical */
+#cplayer-settings-menu {
+  bottom: 56px;
+  right: 60px;
+  min-width: 180px;
+}
+.cplayer-popup-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+}
+.popup-value {
+  color: rgba(255,255,255,.6);
+  font-size: .8rem;
+}
+.popup-back {
+  color: rgba(255,255,255,.6);
+  font-weight: 600;
+  border-bottom: 1px solid rgba(255,255,255,.1);
+  margin-bottom: 4px;
+  padding-bottom: 10px !important;
+}
+
+/* Ripple animation untuk double-tap (poin #15) */
+.cplayer-ripple {
+  position: absolute;
+  width: 120px;
+  height: 120px;
+  border-radius: 50%;
+  background: rgba(255,255,255,.2);
+  pointer-events: none;
+  transform: translate(-50%, -50%);
+  animation: rippleAnim .6s ease-out forwards;
+  z-index: 4;
+}
+@keyframes rippleAnim {
+  0%   { transform: translate(-50%, -50%) scale(.3); opacity: .8; }
+  100% { transform: translate(-50%, -50%) scale(1.4); opacity: 0; }
+}
+
+/* Popup juga ikut hide saat controls hide (poin #3) */
+.cplayer.hide-controls .cplayer-popup,
+.cplayer.hide-controls .cplayer-hover-time {
+  opacity: 0;
+  pointer-events: none;
 }

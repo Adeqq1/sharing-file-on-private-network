@@ -149,13 +149,17 @@
             <audio id="player-audio" controls preload="metadata"></audio>
           </div>
 
-          <!-- Spinner loading -->
+          <!-- Spinner loading — di tengah video (poin #10) -->
           <div id="player-spinner" class="player-spinner hidden">
             <div class="spinner-ring"></div>
           </div>
 
-          <!-- Center play overlay (tap to play saat paused) -->
-          <button id="cplayer-center-play" class="cplayer-center-play hidden" aria-label="Play">▶</button>
+          <!-- Center play overlay -->
+          <button id="cplayer-center-play" class="cplayer-center-play hidden" aria-label="Play"></button>
+
+          <!-- Ripple animations untuk double-tap (poin #15) -->
+          <div id="cplayer-ripple-left" class="cplayer-ripple hidden" aria-hidden="true"></div>
+          <div id="cplayer-ripple-right" class="cplayer-ripple hidden" aria-hidden="true"></div>
 
           <!-- Gesture indicator (volume/brightness saat swipe) -->
           <div id="cplayer-gesture" class="cplayer-gesture hidden" aria-hidden="true">
@@ -173,33 +177,54 @@
 
           <!-- Bottom controls bar -->
           <div id="cplayer-controls" class="cplayer-controls">
-            <!-- Progress bar -->
-            <div class="cplayer-progress" id="cplayer-progress" role="slider"
-                 aria-label="Progress video" aria-valuemin="0" aria-valuemax="100">
-              <div class="cplayer-progress-buffered" id="cplayer-progress-buffered"></div>
-              <div class="cplayer-progress-played"   id="cplayer-progress-played"></div>
-              <div class="cplayer-progress-handle"   id="cplayer-progress-handle"></div>
+            <!-- Progress bar dengan hover preview -->
+            <div class="cplayer-progress-wrap">
+              <div class="cplayer-progress" id="cplayer-progress" role="slider"
+                   aria-label="Progress video" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+                <div class="cplayer-progress-buffered" id="cplayer-progress-buffered"></div>
+                <div class="cplayer-progress-played"   id="cplayer-progress-played"></div>
+                <div class="cplayer-progress-handle"   id="cplayer-progress-handle"></div>
+              </div>
+              <span id="cplayer-hover-time" class="cplayer-hover-time hidden">0:00</span>
             </div>
+
             <!-- Buttons row -->
             <div class="cplayer-btnrow">
-              <button id="cplayer-play"  class="cplayer-btn" aria-label="Play/Pause">▶</button>
-              <span   id="cplayer-time"  class="cplayer-time">0:00 / 0:00</span>
+              <button id="cplayer-prev" class="cplayer-btn" aria-label="Video sebelumnya" style="display:none">
+                <svg viewBox="0 0 24 24" width="22" height="22" fill="currentColor"><path d="M6 6h2v12H6zM9.5 12l8.5 6V6z"/></svg>
+              </button>
+              <button id="cplayer-play"  class="cplayer-btn" aria-label="Play/Pause">
+                <svg viewBox="0 0 24 24" width="22" height="22" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>
+              </button>
+              <button id="cplayer-next" class="cplayer-btn" aria-label="Video berikutnya" style="display:none">
+                <svg viewBox="0 0 24 24" width="22" height="22" fill="currentColor"><path d="M6 18l8.5-6L6 6v12zM16 6h2v12h-2z"/></svg>
+              </button>
+
+              <!-- Volume control -->
+              <div class="cplayer-volume-wrap">
+                <button id="cplayer-mute" class="cplayer-btn" aria-label="Mute">
+                  <svg viewBox="0 0 24 24" width="22" height="22" fill="currentColor"><path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02zM14 3.23v2.06c2.89.86 5 3.54 5 6.71s-2.11 5.85-5 6.71v2.06c4.01-.91 7-4.49 7-8.77s-2.99-7.86-7-8.77z"/></svg>
+                </button>
+                <input type="range" id="cplayer-volume" class="cplayer-volume-slider"
+                       min="0" max="100" value="100" aria-label="Volume" />
+              </div>
+
+              <span id="cplayer-time" class="cplayer-time">0:00 / 0:00</span>
               <div class="cplayer-spacer"></div>
-              <button id="cplayer-cc"    class="cplayer-btn cplayer-cc-btn hidden" aria-label="Toggle subtitle">CC</button>
-              <button id="cplayer-speed" class="cplayer-btn" aria-label="Kecepatan playback">1x</button>
-              <button id="cplayer-fs"    class="cplayer-btn" aria-label="Fullscreen">⛶</button>
+
+              <!-- Settings gear (gabung speed + CC) — poin #11 -->
+              <button id="cplayer-settings" class="cplayer-btn" aria-label="Settings">
+                <svg viewBox="0 0 24 24" width="22" height="22" fill="currentColor"><path d="M19.43 12.98c.04-.32.07-.64.07-.98 0-.34-.03-.66-.07-.98l2.11-1.65c.19-.15.24-.42.12-.64l-2-3.46c-.12-.22-.39-.3-.61-.22l-2.49 1c-.52-.4-1.08-.73-1.69-.98l-.38-2.65C14.46 2.18 14.25 2 14 2h-4c-.25 0-.46.18-.49.42l-.38 2.65c-.61.25-1.17.59-1.69.98l-2.49-1c-.23-.09-.49 0-.61.22l-2 3.46c-.13.22-.07.49.12.64l2.11 1.65c-.04.32-.07.65-.07.98 0 .33.03.66.07.98l-2.11 1.65c-.19.15-.24.42-.12.64l2 3.46c.12.22.39.3.61.22l2.49-1c.52.4 1.08.73 1.69.98l.38 2.65c.03.24.24.42.49.42h4c.25 0 .46-.18.49-.42l.38-2.65c.61-.25 1.17-.59 1.69-.98l2.49 1c.23.09.49 0 .61-.22l2-3.46c.12-.22.07-.49-.12-.64l-2.11-1.65zM12 15.5c-1.93 0-3.5-1.57-3.5-3.5s1.57-3.5 3.5-3.5 3.5 1.57 3.5 3.5-1.57 3.5-3.5 3.5z"/></svg>
+              </button>
+
+              <button id="cplayer-fs" class="cplayer-btn" aria-label="Fullscreen">
+                <svg viewBox="0 0 24 24" width="22" height="22" fill="currentColor"><path d="M7 14H5v5h5v-2H7v-3zm-2-4h2V7h3V5H5v5zm12 7h-3v2h5v-5h-2v3zM14 5v2h3v3h2V5h-5z"/></svg>
+              </button>
             </div>
           </div>
 
-          <!-- Speed popup menu -->
-          <div id="cplayer-speed-menu" class="cplayer-popup hidden" role="menu" aria-label="Pilih kecepatan">
-            <button class="cplayer-popup-item" data-speed="0.5"  role="menuitem">0.5x</button>
-            <button class="cplayer-popup-item" data-speed="0.75" role="menuitem">0.75x</button>
-            <button class="cplayer-popup-item active" data-speed="1"    role="menuitem">1x (Normal)</button>
-            <button class="cplayer-popup-item" data-speed="1.25" role="menuitem">1.25x</button>
-            <button class="cplayer-popup-item" data-speed="1.5"  role="menuitem">1.5x</button>
-            <button class="cplayer-popup-item" data-speed="2"    role="menuitem">2x</button>
-          </div>
+          <!-- Settings popup menu (dynamic content via JS) -->
+          <div id="cplayer-settings-menu" class="cplayer-popup hidden" role="menu" aria-label="Settings"></div>
 
           <!-- Error state -->
           <div id="player-error" class="player-error hidden" role="alert">

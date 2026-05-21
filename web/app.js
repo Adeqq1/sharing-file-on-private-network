@@ -465,11 +465,23 @@ function openPlayer(item) {
   playerOverlay.classList.remove('hidden');
   document.body.style.overflow = 'hidden';
 
-  // History entry untuk tombol back HP
-  history.pushState({ player: true }, '');
+  // Set state path untuk resume + queue
+  if (typeof setPlayerItem === 'function') {
+    setPlayerItem(item, filePathOf(item));
+  }
+
+  // Set queue dari semua items di folder yang sama (untuk autoplay next)
+  if (typeof setQueue === 'function') {
+    setQueue(state.allItems, item);
+  }
+
+  // Tambah history entry hanya kalau belum ada (avoid push duplikat saat next/prev queue)
+  if (!history.state || !history.state.player) {
+    history.pushState({ player: true }, '');
+  }
 
   if (item.streamable === 'video') {
-    // Setup subtitle sebelum load video
+    // Setup subtitle (async, multi-bahasa)
     if (typeof setupSubtitle === 'function') {
       setupSubtitle(item, filePathOf);
     }
@@ -479,15 +491,15 @@ function openPlayer(item) {
       playerPip.classList.remove('hidden');
     }
     playerVideo.addEventListener('leavepictureinpicture', () => {
-      playerPip.textContent = '⧉';
+      playerPip.innerHTML = '⧉';
       playerPip.title = 'Picture in Picture';
     }, { signal: sig });
     playerVideo.addEventListener('enterpictureinpicture', () => {
-      playerPip.textContent = '⊡';
+      playerPip.innerHTML = '⊡';
       playerPip.title = 'Keluar Picture in Picture';
     }, { signal: sig });
 
-    // Error handler (cplayer juga punya, tapi ini untuk overlay error)
+    // Error handler dengan diagnostic
     playerVideo.addEventListener('error', () => {
       playerSpinner.classList.add('hidden');
       const code = playerVideo.error?.code;
@@ -505,6 +517,7 @@ function openPlayer(item) {
 
     playerVideo.src = url;
     playerVideo.load();
+    playerVideo.play().catch(() => {});
 
   } else if (item.streamable === 'audio') {
     playerAudioTitle.textContent = item.name;

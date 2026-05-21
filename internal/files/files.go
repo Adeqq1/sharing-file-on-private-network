@@ -94,9 +94,19 @@ func List(sharedRoot, relPath string) (*ListResult, error) {
 		hasSubtitle := false
 		if media.KindForBrowser(ext) == media.KindVideo {
 			base := strings.TrimSuffix(e.Name(), filepath.Ext(e.Name()))
-			for _, subExt := range []string{".vtt", ".srt"} {
-				subPath := filepath.Join(target, base+subExt)
-				if _, err := os.Stat(subPath); err == nil {
+			// Cari file subtitle: <base>.{srt,vtt} atau <base>.{lang}.{srt,vtt}
+			// Pakai globbing manual via ReadDir lagi terlalu mahal — pakai prefix match
+			for _, sib := range entries {
+				if sib.IsDir() {
+					continue
+				}
+				sn := sib.Name()
+				sext := strings.ToLower(filepath.Ext(sn))
+				if sext != ".srt" && sext != ".vtt" {
+					continue
+				}
+				stem := strings.TrimSuffix(sn, sext)
+				if stem == base || strings.HasPrefix(stem, base+".") {
 					hasSubtitle = true
 					break
 				}

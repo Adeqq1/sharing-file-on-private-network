@@ -23,6 +23,7 @@ const cplayer = {
     queueIndex: -1,
     rafId: null,
     fsTransition: false,     // flag anti race-condition: true saat requestFullscreen sedang pending
+    cssRotated: false,       // flag CSS rotate mode (putar player 90° tanpa fullscreen API)
   },
   abort: null, // AbortController untuk listener per-video
 };
@@ -52,6 +53,7 @@ function initCplayer() {
     speedSubmenu: document.getElementById('cplayer-speed-submenu'),
     ccSubmenu:    document.getElementById('cplayer-cc-submenu'),
     fsBtn:        document.getElementById('cplayer-fs'),
+    rotateBtn:    document.getElementById('cplayer-rotate'),
     prevBtn:      document.getElementById('cplayer-prev'),
     nextBtn:      document.getElementById('cplayer-next'),
     gesture:      document.getElementById('cplayer-gesture'),
@@ -252,6 +254,14 @@ function setupControlEvents() {
     cplayer.dom.fsBtn.addEventListener('click', (e) => {
       e.stopPropagation();
       toggleFullscreen();
+    });
+  }
+
+  // Rotate layar (CSS-based, tanpa fullscreen API — bekerja di semua browser)
+  if (cplayer.dom.rotateBtn) {
+    cplayer.dom.rotateBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      toggleCssRotate();
     });
   }
 
@@ -772,6 +782,29 @@ function togglePlayPause() {
   }
 }
 
+// Toggle CSS rotate — putar player 90° tanpa fullscreen API.
+// Bekerja di semua browser termasuk iOS Safari.
+// Saat masuk fullscreen, rotate mode di-reset agar tidak konflik.
+function toggleCssRotate() {
+  if (!cplayer.dom.container) return;
+
+  cplayer.state.cssRotated = !cplayer.state.cssRotated;
+  cplayer.dom.container.classList.toggle('css-rotated', cplayer.state.cssRotated);
+  document.body.classList.toggle('cp-rotated-active', cplayer.state.cssRotated);
+
+  // Update tombol: menyala saat aktif
+  if (cplayer.dom.rotateBtn) {
+    cplayer.dom.rotateBtn.classList.toggle('active', cplayer.state.cssRotated);
+    cplayer.dom.rotateBtn.setAttribute(
+      'aria-label',
+      cplayer.state.cssRotated ? 'Kembali tegak' : 'Putar layar'
+    );
+    cplayer.dom.rotateBtn.title = cplayer.state.cssRotated ? 'Kembali tegak' : 'Putar layar';
+  }
+
+  showControls();
+}
+
 // Refactor ke async/await agar konsisten — tidak ada double-wrap Promise.
 // Flag fsTransition mencegah race condition saat user double-tap tombol
 // fullscreen sebelum requestFullscreen() selesai (review 1.1 + 1.4).
@@ -788,6 +821,10 @@ async function toggleFullscreen() {
       await document.exitFullscreen();
     } catch (_) { /* abaikan — browser mungkin sudah keluar fullscreen */ }
   } else {
+    // Kalau sedang CSS rotate, matikan dulu — fullscreen + screen lock akan handle rotasi.
+    if (cplayer.state.cssRotated) {
+      toggleCssRotate();
+    }
     // Enter: set flag dulu agar klik ganda tidak memicu requestFullscreen kedua.
     cplayer.state.fsTransition = true;
     try {
@@ -1033,6 +1070,18 @@ function resetCplayer() {
   cplayer.state.queueItems = [];
   cplayer.state.queueIndex = -1;
   cplayer.state.fsTransition = false; // reset flag transisi fullscreen
+
+  // Reset CSS rotate kalau masih aktif saat player ditutup
+  if (cplayer.state.cssRotated) {
+    cplayer.state.cssRotated = false;
+    if (cplayer.dom.container) cplayer.dom.container.classList.remove('css-rotated');
+    document.body.classList.remove('cp-rotated-active');
+    if (cplayer.dom.rotateBtn) {
+      cplayer.dom.rotateBtn.classList.remove('active');
+      cplayer.dom.rotateBtn.setAttribute('aria-label', 'Putar layar');
+      cplayer.dom.rotateBtn.title = 'Putar layar';
+    }
+  }
 }
 
 // Setter untuk app.js

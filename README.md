@@ -214,11 +214,29 @@ LAN Hub dirancang untuk pemakaian rumah/kantor pribadi, bukan untuk diekspos ke 
 1. Tap file video (`.mp4`, `.webm`) atau audio (`.mp3`, `.m4a`, `.ogg`, `.wav`, `.aac`).
 2. Tap tombol **▶ Putar Video di HP** atau **♪ Putar Audio di HP** di modal.
 3. Player fullscreen muncul, file diputar langsung — tidak perlu download dulu.
-4. Seek bar bisa di-drag untuk skip ke posisi tertentu.
-5. Tap **✕** atau tombol back HP untuk menutup player.
 
-> **Format yang bisa di-stream di browser**: MP4 (H.264), WebM, MOV, MP3, M4A, AAC, OGG, WAV.
-> Format lain (MKV, AVI, FLAC, WMV) tidak bisa di-stream di browser — gunakan opsi "Buka dengan App di HP".
+**Custom Player Controls:**
+- **Tap** layar → toggle controls
+- **Double-tap kiri/kanan** → skip ±10 detik
+- **Swipe atas-bawah** sisi kanan → volume
+- **Swipe atas-bawah** sisi kiri → brightness
+- **Tombol speed** → 0.5x sampai 2x
+- **Tombol CC** → toggle subtitle (auto-detect `.srt`/`.vtt` di folder yang sama)
+- **Tombol fullscreen** → masuk/keluar fullscreen
+
+**Keyboard shortcuts (desktop):**
+
+| Tombol | Fungsi |
+|---|---|
+| `Space` / `K` | Play/Pause |
+| `←` / `→` | Seek ±5 detik |
+| `↑` / `↓` | Volume |
+| `F` | Fullscreen |
+| `M` | Mute |
+| `C` | Toggle subtitle |
+
+**Subtitle:**
+File subtitle dengan basename sama (mis. `film.srt` untuk `film.mp4`) otomatis terdeteksi. Format SRT dikonversi ke WebVTT secara otomatis. Untuk multi-bahasa, pakai `film.id.srt`, `film.en.srt`, dll.
 
 ### Buka file di app native HP (VLC, MX Player, dll)
 
@@ -289,6 +307,11 @@ Itu IP **fallback Windows** yang muncul ketika laptop **tidak dapat IP dari rout
 
 ### Tombol "Salin link" tidak menyalin apapun
 Beberapa browser (Firefox, Brave) memblokir `navigator.clipboard` di HTTP non-secure. LAN Hub akan otomatis tampilkan modal manual — tap textarea, pilih semua teks, lalu copy seperti biasa.
+
+### Tombol CC tidak muncul padahal ada file subtitle
+- Pastikan nama subtitle sama dengan video (cuma beda ekstensi). Contoh: `film.mp4` → `film.srt`.
+- File subtitle harus `.srt` atau `.vtt`.
+- Refresh halaman setelah menambah subtitle baru ke folder.
 
 ---
 

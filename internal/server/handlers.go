@@ -8,6 +8,7 @@ import (
 	"lan-server/internal/apps"
 	"lan-server/internal/files"
 	"lan-server/internal/media"
+	"lan-server/internal/subtitle"
 	"net/http"
 	neturl "net/url"
 	"os"
@@ -276,6 +277,156 @@ func sanitizeFilename(s string) string {
 		`*`, "_", `?`, "_", `<`, "_", `>`, "_", `|`, "_",
 	)
 	return replacer.Replace(s)
+}
+
+// HandleSubtitle menangani GET /api/subtitle?path=<video-path>&lang=<id|en|...>
+// Mencari file subtitle (.srt atau .vtt) dengan basename yang sama dengan video.
+// Support multi-bahasa: film.id.srt, film.en.srt, dll. Kalau lang tidak diberi,
+// ambil subtitle pertama (urutan: .vtt > .srt).
+// File .srt dikonversi ke WebVTT on-the-fly. File .vtt diserve langsung.
+func HandleSubtitle(cfg *Config) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+			return
+		}
+
+		relPath := r.URL.Query().Get("path")
+		lang := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("lang")))
+		target, ok := resolveSafeOrRespond(w, cfg.SharedFolder, relPath)
+		if !ok {
+			return
+		}
+
+		info, err := os.Stat(target)
+		if err != nil || info.IsDir() {
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": "file tidak ditemukan"})
+			return
+		}
+
+		dir := filepath.Dir(target)
+		base := strings.TrimSuffix(info.Name(), filepath.Ext(info.Name()))
+
+		type subCandidate struct {
+			path  string
+			isSRT bool
+		}
+		var candidates []subCandidate
+
+		// Kalau lang diisi, prioritaskan subtitle dengan kode bahasa
+		if lang != "" {
+			candidates = append(candidates,
+				subCandidate{filepath.Join(dir, base+"."+lang+".vtt"), false},
+				subCandidate{filepath.Join(dir, base+"."+lang+".srt"), true},
+			)
+		}
+		// Fallback: subtitle tanpa kode bahasa
+		candidates = append(candidates,
+			subCandidate{filepath.Join(dir, base+".vtt"), false},
+			subCandidate{filepath.Join(dir, base+".srt"), true},
+		)
+
+		for _, c := range candidates {
+			if _, err := os.Stat(c.path); err != nil {
+				continue
+			}
+			data, err := os.ReadFile(c.path)
+			if err != nil {
+				writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "gagal membaca subtitle"})
+				return
+			}
+
+			w.Header().Set("Content-Type", "text/vtt; charset=utf-8")
+			w.Header().Set("Cache-Control", "no-cache")
+			w.Header().Set("Access-Control-Allow-Origin", "*")
+
+			if c.isSRT {
+				w.Write([]byte(subtitle.SRTToVTT(string(data))))
+			} else {
+				w.Write(data)
+			}
+			return
+		}
+
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "subtitle tidak ditemukan"})
+	}
+}
+
+// HandleSubtitles menangani GET /api/subtitles?path=<video-path>
+// Return daftar subtitle yang tersedia (untuk multi-bahasa support di UI).
+func HandleSubtitles(cfg *Config) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+			return
+		}
+
+		relPath := r.URL.Query().Get("path")
+		target, ok := resolveSafeOrRespond(w, cfg.SharedFolder, relPath)
+		if !ok {
+			return
+		}
+		info, err := os.Stat(target)
+		if err != nil || info.IsDir() {
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": "file tidak ditemukan"})
+			return
+		}
+
+		dir := filepath.Dir(target)
+		baseName := strings.TrimSuffix(info.Name(), filepath.Ext(info.Name()))
+
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "gagal membaca folder"})
+			return
+		}
+
+		type subInfo struct {
+			Lang  string `json:"lang"`
+			Label string `json:"label"`
+		}
+		results := []subInfo{}
+
+		for _, e := range entries {
+			if e.IsDir() {
+				continue
+			}
+			n := e.Name()
+			ext := strings.ToLower(filepath.Ext(n))
+			if ext != ".srt" && ext != ".vtt" {
+				continue
+			}
+			stem := strings.TrimSuffix(n, ext)
+			if stem == baseName {
+				results = append(results, subInfo{Lang: "", Label: "Default"})
+				continue
+			}
+			if strings.HasPrefix(stem, baseName+".") {
+				code := strings.TrimPrefix(stem, baseName+".")
+				results = append(results, subInfo{
+					Lang:  code,
+					Label: langLabel(code),
+				})
+			}
+		}
+
+		writeJSON(w, http.StatusOK, results)
+	}
+}
+
+// langLabel menerjemahkan kode bahasa ke nama yang lebih ramah.
+func langLabel(code string) string {
+	labels := map[string]string{
+		"id": "Indonesia", "en": "English",
+		"ja": "日本語", "ko": "한국어", "zh": "中文",
+		"es": "Español", "fr": "Français", "de": "Deutsch",
+		"pt": "Português", "ar": "العربية",
+		"th": "ไทย", "vi": "Tiếng Việt", "ms": "Melayu",
+	}
+	if l, ok := labels[strings.ToLower(code)]; ok {
+		return l
+	}
+	return strings.ToUpper(code)
 }
 
 // HandleDownload menangani GET /api/download?path=<relative>

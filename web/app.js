@@ -441,6 +441,7 @@ function closePlayer() {
   if (typeof resetCplayer === 'function') resetCplayer();
   playerOverlay.classList.add('hidden');
   document.body.style.overflow = '';
+  state.currentPlayerItem = null; // clear agar tombol download tidak referensi item lama
 }
 
 // ===== Download =====

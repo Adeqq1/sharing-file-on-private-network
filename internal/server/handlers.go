@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 // writeJSON menulis response JSON dengan status code tertentu.
@@ -463,11 +464,18 @@ func HandleLiveEvents(hub *live.Hub) http.HandlerFunc {
 		fmt.Fprintf(w, ": connected\n\n")
 		flusher.Flush()
 
+		// Heartbeat setiap 20 detik agar proxy/firewall tidak drop koneksi idle.
+		heartbeat := time.NewTicker(20 * time.Second)
+		defer heartbeat.Stop()
+
 		ctx := r.Context()
 		for {
 			select {
 			case <-ctx.Done():
 				return
+			case <-heartbeat.C:
+				fmt.Fprintf(w, ":ka\n\n")
+				flusher.Flush()
 			case sig, open := <-ch:
 				if !open {
 					fmt.Fprintf(w, "event: signal\ndata: {\"type\":\"bye\",\"from\":\"server\"}\n\n")

@@ -19,14 +19,15 @@ const (
 type Signal struct {
 	Type    string          `json:"type"`    // "offer", "answer", "ice", "bye", "viewer-joined"
 	From    string          `json:"from"`    // peer ID pengirim
-	To      string          `json:"to"`      // peer ID tujuan (atau "broadcaster" / "viewers")
+	To      string          `json:"to"`      // peer ID tujuan (atau "broadcaster")
 	Payload json.RawMessage `json:"payload"` // SDP atau ICE candidate (bisa null)
 }
 
+// peer menyimpan state satu koneksi SSE yang aktif.
+// Field role dihapus — tidak dipakai setelah Join().
 type peer struct {
-	id   string
-	role Role
-	ch   chan Signal // outbox messages untuk peer ini
+	id string
+	ch chan Signal // outbox messages untuk peer ini
 }
 
 // Hub mengelola satu sesi live stream: satu broadcaster, banyak viewer.
@@ -64,11 +65,13 @@ func (h *Hub) ViewerCount() int {
 }
 
 // Join mendaftarkan peer baru. Mengembalikan channel untuk receive signals.
+// Jika role broadcaster dan sudah ada broadcaster aktif, mengembalikan ErrBroadcasterExists.
 func (h *Hub) Join(role Role, id string) (chan Signal, error) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
-	p := &peer{id: id, role: role, ch: make(chan Signal, 32)}
+	// Buffer 64 untuk mengurangi risiko drop notif viewer-joined saat broadcaster sibuk.
+	p := &peer{id: id, ch: make(chan Signal, 64)}
 
 	if role == RoleBroadcaster {
 		if h.broadcaster != nil {
@@ -78,7 +81,9 @@ func (h *Hub) Join(role Role, id string) (chan Signal, error) {
 		h.startedAt = time.Now()
 	} else {
 		h.viewers[id] = p
-		// Beritahu broadcaster ada viewer baru
+		// Beritahu broadcaster ada viewer baru.
+		// Jika channel penuh (sangat jarang di LAN), notif di-drop — viewer akan timeout
+		// menunggu offer dan perlu reconnect. Ini trade-off yang diterima untuk LAN scope.
 		if h.broadcaster != nil {
 			select {
 			case h.broadcaster.ch <- Signal{Type: "viewer-joined", From: id}:
@@ -122,6 +127,10 @@ func (h *Hub) Leave(id string) {
 }
 
 // Forward meneruskan signal ke peer tujuan.
+//
+// Catatan keamanan: endpoint ini berjalan di LAN privat dan trust peer_id dari client.
+// Tidak ada verifikasi bahwa pengirim benar-benar peer yang terdaftar — cukup untuk
+// scope LAN rumah/kantor. Jangan expose server ini ke internet.
 func (h *Hub) Forward(s Signal) {
 	h.mu.RLock()
 	defer h.mu.RUnlock()

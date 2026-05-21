@@ -10,14 +10,13 @@
 const liveState = {
   pc: new Map(),        // viewerId -> RTCPeerConnection (broadcaster side)
   stream: null,         // MediaStream aktif
-  peerId: null,         // ID unik peer ini
+  peerId: null,         // ID unik peer ini (crypto.randomUUID)
   eventSource: null,    // SSE connection
   isLive: false,        // apakah sedang broadcast
   role: null,           // 'broadcaster' | 'viewer'
   timerInterval: null,  // interval untuk update durasi
   startTime: null,      // waktu mulai broadcast
   viewerPc: null,       // RTCPeerConnection (viewer side)
-  statusPollInterval: null, // interval poll status (viewer)
 };
 
 let liveTabInited = false;
@@ -158,7 +157,7 @@ async function startBroadcast(source) {
     }
 
     liveState.stream = stream;
-    liveState.peerId = 'b_' + Math.random().toString(36).slice(2);
+    liveState.peerId = 'b_' + crypto.randomUUID();
     liveState.role = 'broadcaster';
     liveState.isLive = true;
     liveState.startTime = Date.now();
@@ -237,7 +236,8 @@ async function handleBroadcasterSignal(sig) {
     const pc = liveState.pc.get(sig.from);
     if (pc) {
       try {
-        await pc.setRemoteDescription(JSON.parse(sig.payload));
+        // sig.payload sudah object (RTCSessionDescriptionInit) — tidak perlu JSON.parse
+        await pc.setRemoteDescription(sig.payload);
       } catch (err) {
         console.error('Failed to set remote description:', err);
       }
@@ -247,8 +247,9 @@ async function handleBroadcasterSignal(sig) {
     const pc = liveState.pc.get(sig.from);
     if (pc) {
       try {
-        await pc.addIceCandidate(JSON.parse(sig.payload));
-      } catch (err) {
+        // sig.payload sudah object (RTCIceCandidateInit)
+        await pc.addIceCandidate(sig.payload);
+      } catch {
         // ICE candidate errors are often benign
       }
     }
@@ -316,7 +317,7 @@ function stopBroadcast() {
 
 // ===== Viewer Logic =====
 async function startWatching() {
-  liveState.peerId = 'v_' + Math.random().toString(36).slice(2);
+  liveState.peerId = 'v_' + crypto.randomUUID();
   liveState.role = 'viewer';
 
   const pc = new RTCPeerConnection({ iceServers: [] });
@@ -367,7 +368,8 @@ async function handleViewerSignal(sig) {
 
   if (sig.type === 'offer') {
     try {
-      await pc.setRemoteDescription(JSON.parse(sig.payload));
+      // sig.payload sudah object (RTCSessionDescriptionInit) — tidak perlu JSON.parse
+      await pc.setRemoteDescription(sig.payload);
       const answer = await pc.createAnswer();
       await pc.setLocalDescription(answer);
       sendSignal('answer', 'broadcaster', answer);
@@ -378,13 +380,19 @@ async function handleViewerSignal(sig) {
 
   } else if (sig.type === 'ice') {
     try {
-      await pc.addIceCandidate(JSON.parse(sig.payload));
-    } catch (err) {
+      // sig.payload sudah object (RTCIceCandidateInit)
+      await pc.addIceCandidate(sig.payload);
+    } catch {
       // ICE candidate errors are often benign
     }
 
   } else if (sig.type === 'bye') {
     showToast('Broadcast telah dihentikan');
+    stopWatching();
+  } else if (sig.type === 'reset') {
+    // Server kirim reset saat viewer reconnect dengan ID yang sama (mis. setelah server restart).
+    // Tutup PC lama dan mulai ulang proses watching dari awal.
+    showToast('Koneksi direset, menghubungkan ulang...');
     stopWatching();
   }
 }
@@ -406,16 +414,13 @@ function stopWatching() {
 }
 
 // ===== Signaling helper =====
+// payload dikirim sebagai object biasa — server menyimpannya sebagai json.RawMessage
+// dan meneruskannya apa adanya. Penerima bisa langsung pakai sig.payload tanpa JSON.parse manual.
 function sendSignal(type, to, payload) {
   fetch('/api/live/signal', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      type,
-      from: liveState.peerId,
-      to,
-      payload: JSON.stringify(payload),
-    }),
+    body: JSON.stringify({ type, from: liveState.peerId, to, payload }),
   }).catch(() => {});
 }
 

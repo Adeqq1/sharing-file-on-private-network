@@ -1,5 +1,7 @@
 package media
 
+import "strings"
+
 // Kind menyatakan tipe media untuk streaming di browser HTML5.
 type Kind string
 
@@ -9,44 +11,44 @@ const (
 	KindUnsupported Kind = ""
 )
 
-// streamable berisi ekstensi yang dijamin jalan di HTML5 mobile browser modern.
-// Hanya format yang bisa di-stream tanpa transcoding (container + codec native browser).
-var streamable = map[string]Kind{
+// formatInfo menyimpan Kind dan MIME type dalam satu struct.
+// Menggabungkan dua map terpisah supaya tidak bisa out-of-sync.
+type formatInfo struct {
+	Kind Kind
+	MIME string
+}
+
+// formats berisi semua format yang bisa di-stream langsung di HTML5 mobile browser.
+// Hanya format tanpa transcoding (container + codec native browser).
+// Satu sumber kebenaran untuk Kind dan MIME — update di sini, berlaku di mana-mana.
+var formats = map[string]formatInfo{
 	// Video — MP4 H.264/H.265 + AAC, WebM VP8/VP9
-	"mp4":  KindVideo,
-	"m4v":  KindVideo,
-	"webm": KindVideo,
+	"mp4":  {KindVideo, "video/mp4"},
+	"m4v":  {KindVideo, "video/mp4"},
+	"webm": {KindVideo, "video/webm"},
+	// MOV — iPhone/iPad biasanya H.264+AAC, bisa play di Safari iOS & Chrome Android
+	"mov": {KindVideo, "video/quicktime"},
 	// Audio — MP3, AAC, OGG Vorbis, WAV, M4A
-	"mp3": KindAudio,
-	"m4a": KindAudio,
-	"aac": KindAudio,
-	"ogg": KindAudio,
-	"wav": KindAudio,
+	"mp3": {KindAudio, "audio/mpeg"},
+	"m4a": {KindAudio, "audio/mp4"},
+	"aac": {KindAudio, "audio/aac"},
+	"ogg": {KindAudio, "audio/ogg"},
+	"wav": {KindAudio, "audio/wav"},
 }
 
-// MIMETypes memetakan ekstensi ke MIME type yang benar untuk header Content-Type.
-var MIMETypes = map[string]string{
-	"mp4":  "video/mp4",
-	"m4v":  "video/mp4",
-	"webm": "video/webm",
-	"mp3":  "audio/mpeg",
-	"m4a":  "audio/mp4",
-	"aac":  "audio/aac",
-	"ogg":  "audio/ogg",
-	"wav":  "audio/wav",
-}
-
-// KindOf mengembalikan Kind dari extension (lowercase, tanpa titik).
+// KindOf mengembalikan Kind dari extension.
+// Input di-lowercase otomatis, jadi "MP4" dan "mp4" menghasilkan hasil yang sama.
 // Mengembalikan KindUnsupported ("") jika format tidak bisa di-stream langsung.
 func KindOf(ext string) Kind {
-	if k, ok := streamable[ext]; ok {
-		return k
+	if info, ok := formats[strings.ToLower(ext)]; ok {
+		return info.Kind
 	}
 	return KindUnsupported
 }
 
 // MIMEOf mengembalikan MIME type dari extension.
+// Input di-lowercase otomatis.
 // Mengembalikan string kosong jika tidak dikenal.
 func MIMEOf(ext string) string {
-	return MIMETypes[ext]
+	return formats[strings.ToLower(ext)].MIME
 }

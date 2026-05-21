@@ -27,8 +27,7 @@ const uploadInput   = $('upload-input');
 
 // ===== Emoji icons =====
 const EXT_ICONS = {
-  mp4: '🎬', mkv: '🎬', avi: '🎬', mov: '🎬', wmv: '🎬', flv: '🎬', webm: '🎬',
-  mp3: '🎵', flac: '🎵', wav: '🎵', aac: '🎵', ogg: '🎵', m4a: '🎵',
+  mp4: '🎬', mkv: '🎬', avi: '🎬', mov: '🎬', wmv: '🎬', flv: '🎬', webm: '🎬',  mp3: '🎵', flac: '🎵', wav: '🎵', aac: '🎵', ogg: '🎵', m4a: '🎵',
   jpg: '🖼️', jpeg: '🖼️', png: '🖼️', gif: '🖼️', bmp: '🖼️', webp: '🖼️', svg: '🖼️',
   pdf: '📕', doc: '📝', docx: '📝', xls: '📊', xlsx: '📊', ppt: '📊', pptx: '📊',
   txt: '📄', md: '📄', log: '📄', csv: '📄',
@@ -235,9 +234,9 @@ async function openFileModal(item) {
 
       // Divider
       const divider = document.createElement('div');
-      divider.style.cssText = 'border-top:1px solid var(--border);margin:8px 0 4px;';
+      divider.className = 'modal-divider';
       const dividerLabel = document.createElement('p');
-      dividerLabel.style.cssText = 'font-size:.78rem;color:var(--text-muted);margin-bottom:6px;';
+      dividerLabel.className = 'modal-divider-label';
       dividerLabel.textContent = 'Atau buka di laptop:';
       modalApps.appendChild(divider);
       modalApps.appendChild(dividerLabel);
@@ -289,28 +288,39 @@ function closeModal() {
 }
 
 // ===== Player (streaming) =====
-const playerOverlay  = $('player-overlay');
-const playerTitle    = $('player-title');
-const playerVideo    = $('player-video');
-const playerAudioWrap= $('player-audio-wrap');
-const playerAudio    = $('player-audio');
-const playerAudioTitle = $('player-audio-title');
-const playerSpinner  = $('player-spinner');
-const playerError    = $('player-error');
-const playerErrorMsg = $('player-error-msg');
-const playerPip      = $('player-pip');
+const playerOverlay   = $('player-overlay');
+const playerTitle     = $('player-title');
+const playerVideo     = $('player-video');
+const playerAudioWrap = $('player-audio-wrap');
+const playerAudio     = $('player-audio');
+const playerAudioTitle= $('player-audio-title');
+const playerSpinner   = $('player-spinner');
+const playerError     = $('player-error');
+const playerErrorMsg  = $('player-error-msg');
+const playerPip       = $('player-pip');
+
+// Poin #4: AbortController untuk batalkan listener lama saat player dibuka ulang.
+// Mencegah race condition: listener 'error' lama fire saat src di-clear.
+let playerAbort = new AbortController();
 
 function openPlayer(item) {
   const url = '/api/stream?path=' + encodeURIComponent(filePathOf(item));
 
+  // Batalkan semua listener dari sesi player sebelumnya
+  playerAbort.abort();
+  playerAbort = new AbortController();
+  const sig = playerAbort.signal;
+
   // Reset semua state player
+  playerVideo.pause();
+  playerAudio.pause();
+  playerVideo.src = '';
+  playerAudio.src = '';
   playerVideo.classList.add('hidden');
   playerAudioWrap.classList.add('hidden');
   playerError.classList.add('hidden');
   playerSpinner.classList.remove('hidden');
   playerPip.classList.add('hidden');
-  playerVideo.src = '';
-  playerAudio.src = '';
 
   playerTitle.textContent = item.name;
   playerOverlay.classList.remove('hidden');
@@ -320,7 +330,6 @@ function openPlayer(item) {
   history.pushState({ player: true }, '');
 
   if (item.streamable === 'video') {
-    playerVideo.src = url;
     playerVideo.classList.remove('hidden');
 
     // Tampilkan PiP button jika browser mendukung
@@ -328,18 +337,32 @@ function openPlayer(item) {
       playerPip.classList.remove('hidden');
     }
 
-    // Loading state
-    playerVideo.addEventListener('canplay', onVideoCanPlay, { once: true });
-    playerVideo.addEventListener('error', onVideoError, { once: true });
+    // Pasang listener dengan signal — otomatis di-remove saat playerAbort.abort()
+    playerVideo.addEventListener('canplay', onVideoCanPlay, { once: true, signal: sig });
+    playerVideo.addEventListener('error', onVideoError, { once: true, signal: sig });
+
+    // Poin #14: update PiP button saat user keluar dari PiP
+    playerVideo.addEventListener('leavepictureinpicture', () => {
+      playerPip.textContent = '⧉';
+      playerPip.title = 'Picture in Picture';
+    }, { signal: sig });
+    playerVideo.addEventListener('enterpictureinpicture', () => {
+      playerPip.textContent = '⊡';
+      playerPip.title = 'Keluar Picture in Picture';
+    }, { signal: sig });
+
+    playerVideo.src = url;
     playerVideo.load();
 
   } else if (item.streamable === 'audio') {
     playerAudioTitle.textContent = item.name;
-    playerAudio.src = url;
     playerAudioWrap.classList.remove('hidden');
-    playerSpinner.classList.add('hidden');
 
-    playerAudio.addEventListener('error', onAudioError, { once: true });
+    // Poin #9: audio juga punya loading state — spinner tetap tampil sampai canplay
+    playerAudio.addEventListener('canplay', onAudioCanPlay, { once: true, signal: sig });
+    playerAudio.addEventListener('error', onAudioError, { once: true, signal: sig });
+
+    playerAudio.src = url;
     playerAudio.load();
     playerAudio.play().catch(() => { /* autoplay blocked — user tap play */ });
   }
@@ -350,20 +373,49 @@ function onVideoCanPlay() {
   playerVideo.play().catch(() => { /* autoplay blocked */ });
 }
 
+// Poin #10: diagnostic error berdasarkan MediaError.code
 function onVideoError() {
   playerSpinner.classList.add('hidden');
   playerVideo.classList.add('hidden');
-  playerErrorMsg.textContent = 'Gagal memutar video. Format mungkin tidak didukung browser ini.';
+  const code = playerVideo.error?.code;
+  let msg;
+  switch (code) {
+    case 1: msg = 'Pemutaran dibatalkan.'; break;                          // MEDIA_ERR_ABORTED
+    case 2: msg = 'Koneksi terputus saat memuat video. Cek WiFi.'; break;  // MEDIA_ERR_NETWORK
+    case 3: msg = 'File rusak atau codec tidak didukung browser ini.'; break; // MEDIA_ERR_DECODE
+    case 4: msg = 'Format video tidak didukung browser ini. Coba download.'; break; // MEDIA_ERR_SRC_NOT_SUPPORTED
+    default: msg = 'Gagal memutar video.';
+  }
+  playerErrorMsg.textContent = msg;
   playerError.classList.remove('hidden');
 }
 
+// Poin #9: audio canplay handler
+function onAudioCanPlay() {
+  playerSpinner.classList.add('hidden');
+}
+
+// Poin #10: diagnostic error audio
 function onAudioError() {
   playerAudioWrap.classList.add('hidden');
-  playerErrorMsg.textContent = 'Gagal memutar audio. Format mungkin tidak didukung browser ini.';
+  playerSpinner.classList.add('hidden');
+  const code = playerAudio.error?.code;
+  let msg;
+  switch (code) {
+    case 2: msg = 'Koneksi terputus saat memuat audio. Cek WiFi.'; break;
+    case 3: msg = 'File rusak atau codec tidak didukung browser ini.'; break;
+    case 4: msg = 'Format audio tidak didukung browser ini. Coba download.'; break;
+    default: msg = 'Gagal memutar audio.';
+  }
+  playerErrorMsg.textContent = msg;
   playerError.classList.remove('hidden');
 }
 
 function closePlayer() {
+  // Batalkan semua listener aktif
+  playerAbort.abort();
+  playerAbort = new AbortController();
+
   playerVideo.pause();
   playerAudio.pause();
   playerVideo.src = '';
@@ -375,12 +427,11 @@ function closePlayer() {
 // Tombol close player
 $('player-close').addEventListener('click', () => {
   closePlayer();
-  // Hapus history entry yang kita tambahkan
   if (history.state && history.state.player) history.back();
 });
 
 // Tombol back fisik HP
-window.addEventListener('popstate', (e) => {
+window.addEventListener('popstate', () => {
   if (!playerOverlay.classList.contains('hidden')) {
     closePlayer();
   }
@@ -438,6 +489,7 @@ async function uploadFiles(fileList, targetPath) {
     }
   }
   if (successCount > 0) showToast(`✅ ${successCount} file berhasil diupload`);
+  if (failCount > 0) showToast(`❌ ${failCount} file gagal diupload`, true);
   loadFiles(state.currentPath);
 }
 

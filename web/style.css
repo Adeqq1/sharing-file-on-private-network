@@ -351,6 +351,17 @@ body {
 
 .modal-footer { border-top: 1px solid var(--border); padding-top: 14px; }
 
+/* Divider di dalam modal apps (antara tombol stream dan tombol laptop) */
+.modal-divider {
+  border-top: 1px solid var(--border);
+  margin: 8px 0 4px;
+}
+.modal-divider-label {
+  font-size: .78rem;
+  color: var(--text-muted);
+  margin-bottom: 6px;
+}
+
 /* ===== Toast ===== */
 .toast {
   position: fixed;

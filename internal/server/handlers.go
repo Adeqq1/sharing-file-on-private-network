@@ -169,11 +169,16 @@ func HandleStream(cfg *Config) http.HandlerFunc {
 
 		info, err := os.Stat(target)
 		if err != nil {
-			http.Error(w, "file tidak ditemukan", http.StatusNotFound)
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": "file tidak ditemukan"})
 			return
 		}
 		if info.IsDir() {
-			http.Error(w, "tidak bisa stream folder", http.StatusBadRequest)
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "tidak bisa stream folder"})
+			return
+		}
+		// Poin #2: tolak file 0-byte — browser akan stuck di buffering tanpa pesan jelas
+		if info.Size() == 0 {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "file kosong, tidak bisa di-stream"})
 			return
 		}
 
@@ -183,6 +188,10 @@ func HandleStream(cfg *Config) http.HandlerFunc {
 		if mime := media.MIMEOf(ext); mime != "" {
 			w.Header().Set("Content-Type", mime)
 		}
+
+		// Poin #12: Cache-Control private agar browser cache untuk seek,
+		// tapi tidak di-cache proxy/CDN (file bisa berubah di server).
+		w.Header().Set("Cache-Control", "private, max-age=300")
 
 		// http.ServeFile otomatis:
 		// - Set Accept-Ranges: bytes

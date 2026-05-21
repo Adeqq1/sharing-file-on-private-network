@@ -1,31 +1,5 @@
 {
   "shared_folder": "C:\\Users\\<NamaKamu>\\Shared",
   "port": 8080,
-  "pin_enabled": false,
-  "apps": [
-    {
-      "id": "vlc",
-      "name": "VLC Media Player",
-      "exec": "C:\\Program Files\\VideoLAN\\VLC\\vlc.exe",
-      "extensions": ["mp4", "mkv", "avi", "mov", "mp3", "flac", "wav", "aac"]
-    },
-    {
-      "id": "notepad",
-      "name": "Notepad",
-      "exec": "notepad.exe",
-      "extensions": ["txt", "log", "md", "csv", "ini", "cfg", "json", "xml", "yaml", "yml"]
-    },
-    {
-      "id": "photos",
-      "name": "Windows Photos",
-      "exec": "",
-      "extensions": ["jpg", "jpeg", "png", "gif", "bmp", "webp", "svg", "ico"]
-    },
-    {
-      "id": "default",
-      "name": "Buka dengan Default",
-      "exec": "",
-      "extensions": ["*"]
-    }
-  ]
+  "pin_enabled": false
 }

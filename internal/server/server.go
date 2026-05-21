@@ -2,6 +2,7 @@ package server
 
 import (
 	"fmt"
+	"lan-server/internal/live"
 	"log"
 	"net/http"
 	"time"
@@ -13,15 +14,19 @@ func New(cfg *Config) http.Handler {
 
 	// API routes
 	mux.HandleFunc("/api/files", HandleFiles(cfg))
-	mux.HandleFunc("/api/apps", HandleApps(cfg))
-	mux.HandleFunc("/api/open", HandleOpen(cfg))
 	mux.HandleFunc("/api/download", HandleDownload(cfg))
 	mux.HandleFunc("/api/stream", HandleStream(cfg))
 	mux.HandleFunc("/api/subtitle", HandleSubtitle(cfg))
 	mux.HandleFunc("/api/subtitles", HandleSubtitles(cfg))
-	mux.HandleFunc("/api/playlist", HandlePlaylist(cfg))
 	mux.HandleFunc("/api/upload", HandleUpload(cfg))
 	mux.HandleFunc("/api/login", HandleLogin(cfg.PINEnabled))
+
+	// Live stream routes
+	hub := live.NewHub()
+	mux.HandleFunc("/api/live/status", HandleLiveStatus(hub))
+	mux.HandleFunc("/api/live/signal", HandleLiveSignal(hub))
+	mux.HandleFunc("/api/live/events", HandleLiveEvents(hub))
+	mux.HandleFunc("/api/live/stop", HandleLiveStop(hub))
 
 	// Static files (web/)
 	staticFS := http.FileServer(http.Dir("web"))

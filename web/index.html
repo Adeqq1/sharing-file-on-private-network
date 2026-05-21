@@ -8,7 +8,7 @@
   <link rel="stylesheet" href="/style.css" />
 </head>
 <body>
-  <!-- PIN Login Screen (tersembunyi jika PIN tidak aktif) -->
+  <!-- PIN Login Screen -->
   <div id="login-screen" class="login-screen hidden">
     <div class="login-card">
       <div class="login-icon">🔒</div>
@@ -33,7 +33,22 @@
           <span class="header-icon">📡</span>
           <h1>LAN Hub</h1>
         </div>
+
+        <!-- Top Tabs (Desktop) -->
+        <nav class="top-tabs" id="top-tabs" aria-label="Navigasi utama">
+          <a href="#home" class="top-tab active" data-tab="home">File</a>
+          <a href="#live" class="top-tab" data-tab="live">
+            Live <span class="live-badge hidden" id="live-nav-badge" aria-hidden="true"></span>
+          </a>
+          <a href="#settings" class="top-tab" data-tab="settings">Setelan</a>
+        </nav>
+
         <div class="header-actions">
+          <!-- Theme toggle -->
+          <button id="btn-theme" class="icon-btn" aria-label="Ganti tema" title="Tema">
+            <svg id="theme-icon" viewBox="0 0 24 24" width="20" height="20" fill="currentColor"></svg>
+          </button>
+          <!-- File actions (only visible on home tab) -->
           <button id="btn-refresh" class="icon-btn" title="Refresh" aria-label="Refresh">↻</button>
           <button id="btn-upload" class="icon-btn" title="Upload file" aria-label="Upload">⬆</button>
         </div>
@@ -41,143 +56,144 @@
     </header>
 
     <main class="main">
-      <!-- Breadcrumb -->
-      <nav class="breadcrumb" id="breadcrumb" aria-label="Navigasi folder"></nav>
+      <!-- ===== Home Tab ===== -->
+      <section data-tab="home">
+        <nav class="breadcrumb" id="breadcrumb" aria-label="Navigasi folder"></nav>
 
-      <!-- Search -->
-      <div class="search-wrap">
-        <input
-          type="search"
-          id="search-input"
-          class="search-input"
-          placeholder="Cari file atau folder..."
-          aria-label="Cari file"
-        />
-      </div>
-
-      <!-- File list -->
-      <section class="file-section" aria-live="polite">
-        <div id="spinner" class="spinner hidden" aria-label="Memuat...">
-          <div class="spinner-ring"></div>
+        <div class="search-wrap">
+          <input
+            type="search"
+            id="search-input"
+            class="search-input"
+            placeholder="Cari file atau folder..."
+            aria-label="Cari file"
+          />
         </div>
-        <div id="error-box" class="error-box hidden" role="alert"></div>
-        <ul id="file-list" class="file-list" role="list"></ul>
-        <p id="empty-msg" class="empty-msg hidden">Folder ini kosong.</p>
+
+        <div class="file-section-header">
+          <div class="view-toggle" role="group" aria-label="Tampilan file">
+            <button id="view-list" class="icon-btn active" aria-label="Tampilan list" title="List">
+              <svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor">
+                <path d="M3 13h2v-2H3v2zm0 4h2v-2H3v2zm0-8h2V7H3v2zm4 4h14v-2H7v2zm0 4h14v-2H7v2zM7 7v2h14V7H7z"/>
+              </svg>
+            </button>
+            <button id="view-grid" class="icon-btn" aria-label="Tampilan grid" title="Grid">
+              <svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor">
+                <path d="M3 11h8V3H3v8zm0 10h8v-8H3v8zm10 0h8v-8h-8v8zm0-18v8h8V3h-8z"/>
+              </svg>
+            </button>
+          </div>
+        </div>
+
+        <section class="file-section" aria-live="polite">
+          <div id="error-box" class="error-box hidden" role="alert"></div>
+          <ul id="file-list" class="file-list" role="list"></ul>
+          <p id="empty-msg" class="empty-msg hidden">Folder ini kosong.</p>
+        </section>
+      </section>
+
+      <!-- ===== Live Tab ===== -->
+      <section data-tab="live" class="hidden">
+        <div id="live-container" class="live-container"></div>
+      </section>
+
+      <!-- ===== Settings Tab ===== -->
+      <section data-tab="settings" class="hidden">
+        <div class="settings-section">
+          <h2>Setelan</h2>
+          <div class="settings-group">
+            <h3>Tampilan</h3>
+            <div class="settings-item">
+              <div>
+                <div class="settings-item-label">Tema</div>
+                <div class="settings-item-desc">Light, Dark, atau ikut sistem</div>
+              </div>
+              <button id="btn-theme-settings" class="btn btn-secondary" style="min-width:90px">
+                <span id="theme-label-settings">Auto</span>
+              </button>
+            </div>
+          </div>
+          <div class="settings-group">
+            <h3>Tentang</h3>
+            <div class="settings-item">
+              <div>
+                <div class="settings-item-label">LAN Hub</div>
+                <div class="settings-item-desc">File sharing di jaringan lokal</div>
+              </div>
+              <span style="color:var(--text-muted);font-size:.85rem">v2.0</span>
+            </div>
+          </div>
+        </div>
       </section>
     </main>
 
+    <!-- Bottom Nav (Mobile) -->
+    <nav class="bottom-nav" id="bottom-nav" aria-label="Navigasi utama">
+      <a href="#home" class="bottom-nav-item active" data-tab="home">
+        <svg viewBox="0 0 24 24" width="22" height="22" fill="currentColor">
+          <path d="M10 20v-6h4v6h5v-8h3L12 3 2 12h3v8z"/>
+        </svg>
+        <span>File</span>
+      </a>
+      <a href="#live" class="bottom-nav-item" data-tab="live">
+        <svg viewBox="0 0 24 24" width="22" height="22" fill="currentColor">
+          <circle cx="12" cy="12" r="4"/>
+          <path d="M6.34 6.34a8 8 0 0 0 0 11.32M17.66 6.34a8 8 0 0 1 0 11.32M3.51 3.51a12 12 0 0 0 0 16.97M20.49 3.51a12 12 0 0 1 0 16.97" stroke="currentColor" stroke-width="1.5" fill="none"/>
+        </svg>
+        <span>Live</span>
+      </a>
+      <a href="#settings" class="bottom-nav-item" data-tab="settings">
+        <svg viewBox="0 0 24 24" width="22" height="22" fill="currentColor">
+          <path d="M19.43 12.98c.04-.32.07-.64.07-.98s-.03-.66-.07-.98l2.11-1.65c.19-.15.24-.42.12-.64l-2-3.46c-.12-.22-.39-.3-.61-.22l-2.49 1c-.52-.4-1.08-.73-1.69-.98l-.38-2.65C14.46 2.18 14.25 2 14 2h-4c-.25 0-.46.18-.49.42l-.38 2.65c-.61.25-1.17.59-1.69.98l-2.49-1c-.23-.09-.49 0-.61.22l-2 3.46c-.13.22-.07.49.12.64l2.11 1.65c-.04.32-.07.65-.07.98s.03.66.07.98l-2.11 1.65c-.19.15-.24.42-.12.64l2 3.46c.12.22.39.3.61.22l2.49-1c.52.4 1.08.73 1.69.98l.38 2.65c.03.24.24.42.49.42h4c.25 0 .46-.18.49-.42l.38-2.65c.61-.25 1.17-.59 1.69-.98l2.49 1c.23.09.49 0 .61-.22l2-3.46c.12-.22.07-.49-.12-.64l-2.11-1.65zM12 15.5c-1.93 0-3.5-1.57-3.5-3.5s1.57-3.5 3.5-3.5 3.5 1.57 3.5 3.5-1.57 3.5-3.5 3.5z"/>
+        </svg>
+        <span>Setelan</span>
+      </a>
+    </nav>
+
     <!-- Upload input (tersembunyi) -->
     <input type="file" id="upload-input" class="hidden" multiple />
-
-    <!-- Modal "Open With" -->
-    <div id="modal-overlay" class="modal-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="modal-title">
-      <div class="modal">
-        <div class="modal-header">
-          <h2 id="modal-title">Buka dengan...</h2>
-          <button id="modal-close" class="icon-btn" aria-label="Tutup modal">✕</button>
-        </div>
-        <p id="modal-filename" class="modal-filename"></p>
-        <div id="modal-apps" class="modal-apps"></div>
-        <div class="modal-footer">
-          <button id="btn-download" class="btn btn-secondary">⬇ Download ke HP</button>
-        </div>
-      </div>
-    </div>
-
-    <!-- Sub-Modal "Buka dengan App di HP" -->
-    <div id="hp-apps-overlay" class="modal-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="hp-apps-title">
-      <div class="modal">
-        <div class="modal-header">
-          <h2 id="hp-apps-title">Buka dengan App di HP</h2>
-          <button id="hp-apps-close" class="icon-btn" aria-label="Tutup">✕</button>
-        </div>
-        <p id="hp-apps-filename" class="modal-filename"></p>
-        <div class="modal-apps" id="hp-apps-list">
-          <!-- Download .m3u — selalu tampil -->
-          <button class="app-btn" data-action="playlist">
-            <span class="app-btn-icon">📥</span>
-            <div class="app-btn-text">
-              <div class="app-btn-title">Download Playlist .m3u</div>
-              <div class="app-btn-desc">Universal — buka di VLC, MX Player, nPlayer, dll</div>
-            </div>
-          </button>
-          <!-- Share — hanya tampil jika Web Share API tersedia -->
-          <button class="app-btn hidden" id="btn-hp-share" data-action="share">
-            <span class="app-btn-icon">↗</span>
-            <div class="app-btn-text">
-              <div class="app-btn-title">Bagikan link stream</div>
-              <div class="app-btn-desc">Kirim ke app lain di HP via dialog share</div>
-            </div>
-          </button>
-          <!-- Copy link — selalu tampil -->
-          <button class="app-btn" data-action="copy">
-            <span class="app-btn-icon">📋</span>
-            <div class="app-btn-text">
-              <div class="app-btn-title">Salin link stream</div>
-              <div class="app-btn-desc">Paste di kolom URL app media player</div>
-            </div>
-          </button>
-        </div>
-        <p class="hp-apps-tip">
-          💡 Untuk MKV, AVI, FLAC — gunakan opsi ini. App native bisa memutar codec yang browser tidak bisa.
-        </p>
-      </div>
-    </div>
 
     <!-- Player Modal (streaming video/audio) -->
     <div id="player-overlay" class="player-overlay hidden" role="dialog" aria-modal="true" aria-label="Media player">
       <div class="player-header">
         <button id="player-close" class="icon-btn player-close-btn" aria-label="Tutup player">✕</button>
         <span id="player-title" class="player-title"></span>
+        <!-- Tombol download di header player -->
+        <button id="player-download" class="icon-btn player-close-btn" aria-label="Download" title="Download ke HP">
+          <svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor">
+            <path d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z"/>
+          </svg>
+        </button>
         <button id="player-pip" class="icon-btn player-close-btn pip-btn hidden" aria-label="Picture in picture" title="Picture in Picture">⧉</button>
       </div>
       <div class="player-body">
-        <!-- ===== Custom Player ===== -->
         <div class="cplayer" id="cplayer">
-          <!-- Video element TANPA controls — dikontrol via cplayer.js -->
-          <video
-            id="player-video"
-            class="cplayer-video"
-            playsinline
-            preload="metadata"
-          ></video>
+          <video id="player-video" class="cplayer-video" playsinline preload="metadata"></video>
 
-          <!-- Audio mode (untuk MP3/AAC/dll) — tetap pakai controls default -->
           <div id="player-audio-wrap" class="player-audio-wrap hidden">
             <div class="player-audio-art">🎵</div>
             <p id="player-audio-title" class="player-audio-title"></p>
             <audio id="player-audio" controls preload="metadata"></audio>
           </div>
 
-          <!-- Spinner loading — di tengah video (poin #10) -->
           <div id="player-spinner" class="player-spinner hidden">
             <div class="spinner-ring"></div>
           </div>
 
-          <!-- Center play overlay -->
           <button id="cplayer-center-play" class="cplayer-center-play hidden" aria-label="Play"></button>
 
-          <!-- Ripple animations untuk double-tap (poin #15) -->
-          <div id="cplayer-ripple-left" class="cplayer-ripple hidden" aria-hidden="true"></div>
+          <div id="cplayer-ripple-left"  class="cplayer-ripple hidden" aria-hidden="true"></div>
           <div id="cplayer-ripple-right" class="cplayer-ripple hidden" aria-hidden="true"></div>
 
-          <!-- Gesture indicator (volume/brightness saat swipe) -->
           <div id="cplayer-gesture" class="cplayer-gesture hidden" aria-hidden="true">
             <span id="cplayer-gesture-icon">🔊</span>
             <span id="cplayer-gesture-text">50%</span>
           </div>
 
-          <!-- Skip indicators (double-tap kiri/kanan) -->
-          <div id="cplayer-skip-back" class="cplayer-skip-indicator skip-left hidden" aria-hidden="true">
-            <span>⏪</span><span>-10s</span>
-          </div>
-          <div id="cplayer-skip-fwd" class="cplayer-skip-indicator skip-right hidden" aria-hidden="true">
-            <span>⏩</span><span>+10s</span>
-          </div>
+          <div id="cplayer-skip-back" class="cplayer-skip-indicator skip-left hidden"  aria-hidden="true"><span>⏪</span><span>-10s</span></div>
+          <div id="cplayer-skip-fwd"  class="cplayer-skip-indicator skip-right hidden" aria-hidden="true"><span>⏩</span><span>+10s</span></div>
 
-          <!-- Bottom controls bar -->
           <div id="cplayer-controls" class="cplayer-controls">
-            <!-- Progress bar dengan hover preview -->
             <div class="cplayer-progress-wrap">
               <div class="cplayer-progress" id="cplayer-progress" role="slider"
                    aria-label="Progress video" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
@@ -187,53 +203,48 @@
               </div>
               <span id="cplayer-hover-time" class="cplayer-hover-time hidden">0:00</span>
             </div>
-
-            <!-- Buttons row -->
             <div class="cplayer-btnrow">
               <button id="cplayer-prev" class="cplayer-btn" aria-label="Video sebelumnya" style="display:none">
                 <svg viewBox="0 0 24 24" width="22" height="22" fill="currentColor"><path d="M6 6h2v12H6zM9.5 12l8.5 6V6z"/></svg>
               </button>
-              <button id="cplayer-play"  class="cplayer-btn" aria-label="Play/Pause">
+              <button id="cplayer-play" class="cplayer-btn" aria-label="Play/Pause">
                 <svg viewBox="0 0 24 24" width="22" height="22" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>
               </button>
               <button id="cplayer-next" class="cplayer-btn" aria-label="Video berikutnya" style="display:none">
                 <svg viewBox="0 0 24 24" width="22" height="22" fill="currentColor"><path d="M6 18l8.5-6L6 6v12zM16 6h2v12h-2z"/></svg>
               </button>
-
-              <!-- Volume control -->
               <div class="cplayer-volume-wrap">
                 <button id="cplayer-mute" class="cplayer-btn" aria-label="Mute">
                   <svg viewBox="0 0 24 24" width="22" height="22" fill="currentColor"><path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02zM14 3.23v2.06c2.89.86 5 3.54 5 6.71s-2.11 5.85-5 6.71v2.06c4.01-.91 7-4.49 7-8.77s-2.99-7.86-7-8.77z"/></svg>
                 </button>
-                <input type="range" id="cplayer-volume" class="cplayer-volume-slider"
-                       min="0" max="100" value="100" aria-label="Volume" />
+                <input type="range" id="cplayer-volume" class="cplayer-volume-slider" min="0" max="100" value="100" aria-label="Volume" />
               </div>
-
               <span id="cplayer-time" class="cplayer-time">0:00 / 0:00</span>
               <div class="cplayer-spacer"></div>
-
-              <!-- Settings gear (gabung speed + CC) — poin #11 -->
               <button id="cplayer-settings" class="cplayer-btn" aria-label="Settings">
                 <svg viewBox="0 0 24 24" width="22" height="22" fill="currentColor"><path d="M19.43 12.98c.04-.32.07-.64.07-.98 0-.34-.03-.66-.07-.98l2.11-1.65c.19-.15.24-.42.12-.64l-2-3.46c-.12-.22-.39-.3-.61-.22l-2.49 1c-.52-.4-1.08-.73-1.69-.98l-.38-2.65C14.46 2.18 14.25 2 14 2h-4c-.25 0-.46.18-.49.42l-.38 2.65c-.61.25-1.17.59-1.69.98l-2.49-1c-.23-.09-.49 0-.61.22l-2 3.46c-.13.22-.07.49.12.64l2.11 1.65c-.04.32-.07.65-.07.98 0 .33.03.66.07.98l-2.11 1.65c-.19.15-.24.42-.12.64l2 3.46c.12.22.39.3.61.22l2.49-1c.52.4 1.08.73 1.69.98l.38 2.65c.03.24.24.42.49.42h4c.25 0 .46-.18.49-.42l.38-2.65c.61-.25 1.17-.59 1.69-.98l2.49 1c.23.09.49 0 .61-.22l2-3.46c.12-.22.07-.49-.12-.64l-2.11-1.65zM12 15.5c-1.93 0-3.5-1.57-3.5-3.5s1.57-3.5 3.5-3.5 3.5 1.57 3.5 3.5-1.57 3.5-3.5 3.5z"/></svg>
               </button>
-
               <button id="cplayer-fs" class="cplayer-btn" aria-label="Fullscreen">
                 <svg viewBox="0 0 24 24" width="22" height="22" fill="currentColor"><path d="M7 14H5v5h5v-2H7v-3zm-2-4h2V7h3V5H5v5zm12 7h-3v2h5v-5h-2v3zM14 5v2h3v3h2V5h-5z"/></svg>
               </button>
             </div>
           </div>
 
-          <!-- Settings popup menu (dynamic content via JS) -->
           <div id="cplayer-settings-menu" class="cplayer-popup hidden" role="menu" aria-label="Settings"></div>
 
-          <!-- Error state -->
+          <!-- Error state: format tidak didukung atau error lain -->
           <div id="player-error" class="player-error hidden" role="alert">
             <div class="player-error-icon">⚠️</div>
             <p id="player-error-msg"></p>
-            <p class="player-error-hint">Coba "Buka dengan App di HP" untuk format ini.</p>
+            <p class="player-error-hint">Download file untuk membuka di app HP.</p>
+            <button id="player-error-download" class="btn btn-primary" style="margin-top:12px">
+              <svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor" style="flex-shrink:0">
+                <path d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z"/>
+              </svg>
+              Download ke HP
+            </button>
           </div>
         </div>
-        <!-- ===== End Custom Player ===== -->
       </div>
     </div>
 
@@ -243,5 +254,6 @@
 
   <script src="/cplayer.js"></script>
   <script src="/app.js"></script>
+  <script src="/live.js"></script>
 </body>
 </html>

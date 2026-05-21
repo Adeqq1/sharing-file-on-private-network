@@ -425,16 +425,160 @@ $('hp-apps-overlay').addEventListener('click', (e) => {
 $('hp-apps-close').addEventListener('click', closeHpAppsModal);
 
 // ===== Player (streaming) =====
-const playerOverlay   = $('player-overlay');
-const playerTitle     = $('player-title');
-const playerVideo     = $('player-video');
-const playerAudioWrap = $('player-audio-wrap');
-const playerAudio     = $('player-audio');
-const playerAudioTitle= $('player-audio-title');
-const playerSpinner   = $('player-spinner');
-const playerError     = $('player-error');
-const playerErrorMsg  = $('player-error-msg');
-const playerPip       = $('player-pip');
+const playerOverlay = $('player-overlay');
+const playerTitle   = $('player-title');
+const playerPip     = $('player-pip');
+
+// AbortController untuk batalkan listener lama saat player dibuka ulang
+let playerAbort = new AbortController();
+
+function openPlayer(item) {
+  const url = '/api/stream?path=' + encodeURIComponent(filePathOf(item));
+
+  // Batalkan listener sesi sebelumnya
+  playerAbort.abort();
+  playerAbort = new AbortController();
+  const sig = playerAbort.signal;
+
+  const playerVideo     = $('player-video');
+  const playerAudio     = $('player-audio');
+  const playerAudioWrap = $('player-audio-wrap');
+  const playerAudioTitle= $('player-audio-title');
+  const playerSpinner   = $('player-spinner');
+  const playerError     = $('player-error');
+  const playerErrorMsg  = $('player-error-msg');
+
+  // Reset state
+  playerVideo.pause();
+  playerAudio.pause();
+  playerVideo.src = '';
+  playerAudio.src = '';
+  playerAudioWrap.classList.add('hidden');
+  playerError.classList.add('hidden');
+  playerSpinner.classList.remove('hidden');
+  playerPip.classList.add('hidden');
+
+  // Reset custom player state
+  if (typeof resetCplayer === 'function') resetCplayer();
+
+  playerTitle.textContent = item.name;
+  playerOverlay.classList.remove('hidden');
+  document.body.style.overflow = 'hidden';
+
+  // History entry untuk tombol back HP
+  history.pushState({ player: true }, '');
+
+  if (item.streamable === 'video') {
+    // Setup subtitle sebelum load video
+    if (typeof setupSubtitle === 'function') {
+      setupSubtitle(item, filePathOf);
+    }
+
+    // PiP button
+    if (document.pictureInPictureEnabled) {
+      playerPip.classList.remove('hidden');
+    }
+    playerVideo.addEventListener('leavepictureinpicture', () => {
+      playerPip.textContent = '⧉';
+      playerPip.title = 'Picture in Picture';
+    }, { signal: sig });
+    playerVideo.addEventListener('enterpictureinpicture', () => {
+      playerPip.textContent = '⊡';
+      playerPip.title = 'Keluar Picture in Picture';
+    }, { signal: sig });
+
+    // Error handler (cplayer juga punya, tapi ini untuk overlay error)
+    playerVideo.addEventListener('error', () => {
+      playerSpinner.classList.add('hidden');
+      const code = playerVideo.error?.code;
+      let msg;
+      switch (code) {
+        case 1: msg = 'Pemutaran dibatalkan.'; break;
+        case 2: msg = 'Koneksi terputus. Cek WiFi.'; break;
+        case 3: msg = 'File rusak atau codec tidak didukung browser ini.'; break;
+        case 4: msg = 'Format video tidak didukung browser ini. Coba "Buka dengan App di HP".'; break;
+        default: msg = 'Gagal memutar video.';
+      }
+      if (playerErrorMsg) playerErrorMsg.textContent = msg;
+      if (playerError) playerError.classList.remove('hidden');
+    }, { signal: sig });
+
+    playerVideo.src = url;
+    playerVideo.load();
+
+  } else if (item.streamable === 'audio') {
+    playerAudioTitle.textContent = item.name;
+    playerAudioWrap.classList.remove('hidden');
+
+    playerAudio.addEventListener('canplay', () => {
+      playerSpinner.classList.add('hidden');
+    }, { once: true, signal: sig });
+
+    playerAudio.addEventListener('error', () => {
+      playerAudioWrap.classList.add('hidden');
+      playerSpinner.classList.add('hidden');
+      const code = playerAudio.error?.code;
+      let msg;
+      switch (code) {
+        case 2: msg = 'Koneksi terputus. Cek WiFi.'; break;
+        case 3: msg = 'File rusak atau codec tidak didukung.'; break;
+        case 4: msg = 'Format audio tidak didukung browser ini.'; break;
+        default: msg = 'Gagal memutar audio.';
+      }
+      if (playerErrorMsg) playerErrorMsg.textContent = msg;
+      if (playerError) playerError.classList.remove('hidden');
+    }, { once: true, signal: sig });
+
+    playerAudio.src = url;
+    playerAudio.load();
+    playerAudio.play().catch(() => {});
+  }
+}
+
+function closePlayer() {
+  playerAbort.abort();
+  playerAbort = new AbortController();
+
+  const playerVideo = $('player-video');
+  const playerAudio = $('player-audio');
+  playerVideo.pause();
+  playerAudio.pause();
+  playerVideo.src = '';
+  playerAudio.src = '';
+
+  // Reset custom player
+  if (typeof resetCplayer === 'function') resetCplayer();
+
+  playerOverlay.classList.add('hidden');
+  document.body.style.overflow = '';
+}
+
+// Tombol close player
+$('player-close').addEventListener('click', () => {
+  closePlayer();
+  if (history.state && history.state.player) history.back();
+});
+
+// Tombol back fisik HP
+window.addEventListener('popstate', () => {
+  if (!playerOverlay.classList.contains('hidden')) {
+    closePlayer();
+  }
+});
+
+// Picture-in-Picture
+playerPip.addEventListener('click', async () => {
+  const playerVideo = $('player-video');
+  try {
+    if (document.pictureInPictureElement) {
+      await document.exitPictureInPicture();
+    } else {
+      await playerVideo.requestPictureInPicture();
+    }
+  } catch {
+    showToast('PiP tidak didukung di browser ini', true);
+  }
+});
 
 // Poin #4: AbortController untuk batalkan listener lama saat player dibuka ulang.
 // Mencegah race condition: listener 'error' lama fire saat src di-clear.
@@ -774,7 +918,7 @@ $('btn-login').addEventListener('click', submitPIN);
 
 document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape') {
-    if (!playerOverlay.classList.contains('hidden')) {
+    if (!$('player-overlay').classList.contains('hidden')) {
       closePlayer();
     } else if (!$('hp-apps-overlay').classList.contains('hidden')) {
       closeHpAppsModal();
@@ -785,4 +929,6 @@ document.addEventListener('keydown', (e) => {
 });
 
 // ===== Init =====
+// Inisialisasi custom player setelah DOM siap
+if (typeof initCplayer === 'function') initCplayer();
 checkAuth();

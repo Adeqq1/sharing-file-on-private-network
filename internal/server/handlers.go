@@ -8,6 +8,7 @@ import (
 	"lan-server/internal/apps"
 	"lan-server/internal/files"
 	"lan-server/internal/media"
+	"lan-server/internal/subtitle"
 	"net/http"
 	neturl "net/url"
 	"os"
@@ -276,6 +277,69 @@ func sanitizeFilename(s string) string {
 		`*`, "_", `?`, "_", `<`, "_", `>`, "_", `|`, "_",
 	)
 	return replacer.Replace(s)
+}
+
+// HandleSubtitle menangani GET /api/subtitle?path=<video-path>
+// Mencari file subtitle (.srt atau .vtt) dengan basename yang sama dengan video.
+// File .srt dikonversi ke WebVTT on-the-fly. File .vtt diserve langsung.
+func HandleSubtitle(cfg *Config) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+			return
+		}
+
+		relPath := r.URL.Query().Get("path")
+		target, ok := resolveSafeOrRespond(w, cfg.SharedFolder, relPath)
+		if !ok {
+			return
+		}
+
+		info, err := os.Stat(target)
+		if err != nil || info.IsDir() {
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": "file tidak ditemukan"})
+			return
+		}
+
+		// Cari subtitle di folder yang sama dengan video
+		dir := filepath.Dir(target)
+		base := strings.TrimSuffix(info.Name(), filepath.Ext(info.Name()))
+
+		// Urutan pencarian: .vtt dulu (tidak perlu konversi), lalu .srt
+		candidates := []struct {
+			path  string
+			isSRT bool
+		}{
+			{filepath.Join(dir, base+".vtt"), false},
+			{filepath.Join(dir, base+".srt"), true},
+		}
+
+		for _, c := range candidates {
+			if _, err := os.Stat(c.path); err != nil {
+				continue
+			}
+			data, err := os.ReadFile(c.path)
+			if err != nil {
+				writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "gagal membaca subtitle"})
+				return
+			}
+
+			w.Header().Set("Content-Type", "text/vtt; charset=utf-8")
+			w.Header().Set("Cache-Control", "no-cache")
+			// CORS header agar <track> element bisa load dari origin yang sama
+			w.Header().Set("Access-Control-Allow-Origin", "*")
+
+			if c.isSRT {
+				vtt := subtitle.SRTToVTT(string(data))
+				w.Write([]byte(vtt))
+			} else {
+				w.Write(data)
+			}
+			return
+		}
+
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "subtitle tidak ditemukan"})
+	}
 }
 
 // HandleDownload menangani GET /api/download?path=<relative>

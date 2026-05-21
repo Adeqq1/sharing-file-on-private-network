@@ -132,30 +132,83 @@
         <button id="player-pip" class="icon-btn player-close-btn pip-btn hidden" aria-label="Picture in picture" title="Picture in Picture">⧉</button>
       </div>
       <div class="player-body">
-        <!-- Spinner loading -->
-        <div id="player-spinner" class="player-spinner hidden">
-          <div class="spinner-ring"></div>
+        <!-- ===== Custom Player ===== -->
+        <div class="cplayer" id="cplayer">
+          <!-- Video element TANPA controls — dikontrol via cplayer.js -->
+          <video
+            id="player-video"
+            class="cplayer-video"
+            playsinline
+            preload="metadata"
+          ></video>
+
+          <!-- Audio mode (untuk MP3/AAC/dll) — tetap pakai controls default -->
+          <div id="player-audio-wrap" class="player-audio-wrap hidden">
+            <div class="player-audio-art">🎵</div>
+            <p id="player-audio-title" class="player-audio-title"></p>
+            <audio id="player-audio" controls preload="metadata"></audio>
+          </div>
+
+          <!-- Spinner loading -->
+          <div id="player-spinner" class="player-spinner hidden">
+            <div class="spinner-ring"></div>
+          </div>
+
+          <!-- Center play overlay (tap to play saat paused) -->
+          <button id="cplayer-center-play" class="cplayer-center-play hidden" aria-label="Play">▶</button>
+
+          <!-- Gesture indicator (volume/brightness saat swipe) -->
+          <div id="cplayer-gesture" class="cplayer-gesture hidden" aria-hidden="true">
+            <span id="cplayer-gesture-icon">🔊</span>
+            <span id="cplayer-gesture-text">50%</span>
+          </div>
+
+          <!-- Skip indicators (double-tap kiri/kanan) -->
+          <div id="cplayer-skip-back" class="cplayer-skip-indicator skip-left hidden" aria-hidden="true">
+            <span>⏪</span><span>-10s</span>
+          </div>
+          <div id="cplayer-skip-fwd" class="cplayer-skip-indicator skip-right hidden" aria-hidden="true">
+            <span>⏩</span><span>+10s</span>
+          </div>
+
+          <!-- Bottom controls bar -->
+          <div id="cplayer-controls" class="cplayer-controls">
+            <!-- Progress bar -->
+            <div class="cplayer-progress" id="cplayer-progress" role="slider"
+                 aria-label="Progress video" aria-valuemin="0" aria-valuemax="100">
+              <div class="cplayer-progress-buffered" id="cplayer-progress-buffered"></div>
+              <div class="cplayer-progress-played"   id="cplayer-progress-played"></div>
+              <div class="cplayer-progress-handle"   id="cplayer-progress-handle"></div>
+            </div>
+            <!-- Buttons row -->
+            <div class="cplayer-btnrow">
+              <button id="cplayer-play"  class="cplayer-btn" aria-label="Play/Pause">▶</button>
+              <span   id="cplayer-time"  class="cplayer-time">0:00 / 0:00</span>
+              <div class="cplayer-spacer"></div>
+              <button id="cplayer-cc"    class="cplayer-btn cplayer-cc-btn hidden" aria-label="Toggle subtitle">CC</button>
+              <button id="cplayer-speed" class="cplayer-btn" aria-label="Kecepatan playback">1x</button>
+              <button id="cplayer-fs"    class="cplayer-btn" aria-label="Fullscreen">⛶</button>
+            </div>
+          </div>
+
+          <!-- Speed popup menu -->
+          <div id="cplayer-speed-menu" class="cplayer-popup hidden" role="menu" aria-label="Pilih kecepatan">
+            <button class="cplayer-popup-item" data-speed="0.5"  role="menuitem">0.5x</button>
+            <button class="cplayer-popup-item" data-speed="0.75" role="menuitem">0.75x</button>
+            <button class="cplayer-popup-item active" data-speed="1"    role="menuitem">1x (Normal)</button>
+            <button class="cplayer-popup-item" data-speed="1.25" role="menuitem">1.25x</button>
+            <button class="cplayer-popup-item" data-speed="1.5"  role="menuitem">1.5x</button>
+            <button class="cplayer-popup-item" data-speed="2"    role="menuitem">2x</button>
+          </div>
+
+          <!-- Error state -->
+          <div id="player-error" class="player-error hidden" role="alert">
+            <div class="player-error-icon">⚠️</div>
+            <p id="player-error-msg"></p>
+            <p class="player-error-hint">Coba "Buka dengan App di HP" untuk format ini.</p>
+          </div>
         </div>
-        <!-- Video element -->
-        <video
-          id="player-video"
-          class="player-video hidden"
-          controls
-          playsinline
-          preload="metadata"
-        ></video>
-        <!-- Audio element + artwork -->
-        <div id="player-audio-wrap" class="player-audio-wrap hidden">
-          <div class="player-audio-art">🎵</div>
-          <p id="player-audio-title" class="player-audio-title"></p>
-          <audio id="player-audio" controls preload="metadata"></audio>
-        </div>
-        <!-- Error state -->
-        <div id="player-error" class="player-error hidden">
-          <div class="player-error-icon">⚠️</div>
-          <p id="player-error-msg"></p>
-          <p class="player-error-hint">Coba download file lalu buka di aplikasi media player.</p>
-        </div>
+        <!-- ===== End Custom Player ===== -->
       </div>
     </div>
 
@@ -163,6 +216,7 @@
     <div id="toast" class="toast hidden" role="status" aria-live="polite"></div>
   </div>
 
+  <script src="/cplayer.js"></script>
   <script src="/app.js"></script>
 </body>
 </html>

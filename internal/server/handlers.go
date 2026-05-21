@@ -5,14 +5,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"lan-server/internal/apps"
 	"lan-server/internal/files"
+	"lan-server/internal/live"
 	"lan-server/internal/media"
 	"lan-server/internal/subtitle"
 	"net/http"
-	neturl "net/url"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 )
@@ -60,105 +58,11 @@ func HandleFiles(cfg *Config) http.HandlerFunc {
 	}
 }
 
-// HandleApps menangani GET /api/apps?ext=<extension>
-func HandleApps(cfg *Config) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodGet {
-			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-			return
-		}
-		ext := r.URL.Query().Get("ext")
-		list := apps.List(ext, cfg.Apps)
-		// Kirim hanya id dan name ke client (jangan bocorkan exec path)
-		type safeApp struct {
-			ID   string `json:"id"`
-			Name string `json:"name"`
-		}
-		safe := make([]safeApp, len(list))
-		for i, a := range list {
-			safe[i] = safeApp{ID: a.ID, Name: a.Name}
-		}
-		writeJSON(w, http.StatusOK, safe)
-	}
-}
-
-// openRequest adalah body dari POST /api/open
-type openRequest struct {
-	AppID string `json:"app_id"`
-	Path  string `json:"path"`
-}
-
-// HandleOpen menangani POST /api/open
-func HandleOpen(cfg *Config) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost {
-			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-			return
-		}
-
-		var req openRequest
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "body tidak valid"})
-			return
-		}
-
-		// Validasi path (DRY via resolveSafeOrRespond — termasuk symlink check)
-		target, ok := resolveSafeOrRespond(w, cfg.SharedFolder, req.Path)
-		if !ok {
-			return
-		}
-
-		// Verifikasi file ada dan bukan folder (#2)
-		info, err := os.Stat(target)
-		if err != nil {
-			writeJSON(w, http.StatusNotFound, map[string]string{"error": "file tidak ditemukan"})
-			return
-		}
-		if info.IsDir() {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "tidak bisa membuka folder dengan Open With"})
-			return
-		}
-
-		// Cari app berdasarkan app_id (exec HANYA dari config, tidak dari client)
-		var found *apps.AppDef
-		for i := range cfg.Apps {
-			if cfg.Apps[i].ID == req.AppID {
-				found = &cfg.Apps[i]
-				break
-			}
-		}
-		if found == nil {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "app_id tidak ditemukan"})
-			return
-		}
-
-		// Eksekusi aplikasi
-		var cmd *exec.Cmd
-		if found.Exec == "" {
-			// Default Windows: buka dengan aplikasi default
-			cmd = exec.Command("cmd", "/C", "start", "", target)
-		} else {
-			cmd = exec.Command(found.Exec, target)
-		}
-
-		if err := cmd.Start(); err != nil {
-			writeJSON(w, http.StatusInternalServerError, map[string]string{
-				"error": fmt.Sprintf("gagal membuka aplikasi: %s", err.Error()),
-			})
-			return
-		}
-
-		writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
-	}
-}
-
 // HandleStream menangani GET /api/stream?path=<relative>
-// Berbeda dengan HandleDownload: TIDAK set Content-Disposition attachment,
-// sehingga browser bisa memutar file langsung (bukan mendownload).
-// http.ServeFile otomatis handle Range request (Accept-Ranges: bytes) untuk seek.
+// TIDAK set Content-Disposition attachment — browser memutar langsung.
+// http.ServeFile otomatis handle Range request untuk seek.
 func HandleStream(cfg *Config) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		// Support GET dan HEAD (HEAD dipakai browser untuk cek metadata sebelum play)
 		if r.Method != http.MethodGet && r.Method != http.MethodHead {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 			return
@@ -178,112 +82,22 @@ func HandleStream(cfg *Config) http.HandlerFunc {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "tidak bisa stream folder"})
 			return
 		}
-		// Poin #2: tolak file 0-byte — browser akan stuck di buffering tanpa pesan jelas
 		if info.Size() == 0 {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "file kosong, tidak bisa di-stream"})
 			return
 		}
 
-		// Set Content-Type eksplisit berdasarkan ekstensi.
-		// Tanpa ini, beberapa browser mobile tidak mau play (terutama audio).
 		ext := strings.ToLower(strings.TrimPrefix(filepath.Ext(info.Name()), "."))
 		if mime := media.MIMEOf(ext); mime != "" {
 			w.Header().Set("Content-Type", mime)
 		}
 
-		// Poin #12: Cache-Control private agar browser cache untuk seek,
-		// tapi tidak di-cache proxy/CDN (file bisa berubah di server).
 		w.Header().Set("Cache-Control", "private, max-age=300")
-
-		// http.ServeFile otomatis:
-		// - Set Accept-Ranges: bytes
-		// - Handle Range request → HTTP 206 Partial Content
-		// - Set Content-Length
-		// - Handle If-Modified-Since / ETag caching
 		http.ServeFile(w, r, target)
 	}
 }
 
-// HandlePlaylist menangani GET /api/playlist?path=<relative>
-// Men-generate file .m3u berisi URL absolute ke /api/stream.
-// User download file ini lalu buka di app media player HP (VLC, MX Player, dll).
-// App membaca URL dari .m3u dan langsung stream dari server.
-func HandlePlaylist(cfg *Config) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodGet {
-			writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
-			return
-		}
-
-		relPath := r.URL.Query().Get("path")
-		target, ok := resolveSafeOrRespond(w, cfg.SharedFolder, relPath)
-		if !ok {
-			return
-		}
-
-		info, err := os.Stat(target)
-		if err != nil {
-			writeJSON(w, http.StatusNotFound, map[string]string{"error": "file tidak ditemukan"})
-			return
-		}
-		if info.IsDir() {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "tidak bisa buat playlist untuk folder"})
-			return
-		}
-		if info.Size() == 0 {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "file kosong"})
-			return
-		}
-
-		// Cek apakah format bisa di-stream (browser atau native)
-		ext := strings.ToLower(strings.TrimPrefix(filepath.Ext(info.Name()), "."))
-		if !media.IsNativePlayable(ext) {
-			writeJSON(w, http.StatusBadRequest, map[string]string{
-				"error": "format tidak didukung untuk streaming",
-			})
-			return
-		}
-
-		// Bangun URL absolute menggunakan r.Host (otomatis berisi IP LAN + port).
-		// Penting: JANGAN pakai "localhost" — app HP tidak tahu apa itu localhost.
-		scheme := "http"
-		if r.TLS != nil {
-			scheme = "https"
-		}
-		streamURL := fmt.Sprintf("%s://%s/api/stream?path=%s",
-			scheme, r.Host, neturl.QueryEscape(relPath))
-
-		// Nama file .m3u yang akan di-download
-		safeBase := sanitizeFilename(info.Name())
-		m3uFilename := safeBase + ".m3u"
-
-		// Headers: paksa download (bukan preview di browser)
-		w.Header().Set("Content-Type", "application/vnd.apple.mpegurl")
-		w.Header().Set("Content-Disposition",
-			fmt.Sprintf(`attachment; filename="%s"`, m3uFilename))
-		w.Header().Set("Cache-Control", "no-cache")
-
-		// Tulis isi .m3u — format Extended M3U
-		fmt.Fprintln(w, "#EXTM3U")
-		fmt.Fprintf(w, "#EXTINF:-1,%s\n", info.Name())
-		fmt.Fprintln(w, streamURL)
-	}
-}
-
-// sanitizeFilename menghapus karakter yang tidak aman untuk nama file di header HTTP.
-func sanitizeFilename(s string) string {
-	replacer := strings.NewReplacer(
-		`"`, "", `\`, "", `/`, "", `:`, "_",
-		`*`, "_", `?`, "_", `<`, "_", `>`, "_", `|`, "_",
-	)
-	return replacer.Replace(s)
-}
-
 // HandleSubtitle menangani GET /api/subtitle?path=<video-path>&lang=<id|en|...>
-// Mencari file subtitle (.srt atau .vtt) dengan basename yang sama dengan video.
-// Support multi-bahasa: film.id.srt, film.en.srt, dll. Kalau lang tidak diberi,
-// ambil subtitle pertama (urutan: .vtt > .srt).
-// File .srt dikonversi ke WebVTT on-the-fly. File .vtt diserve langsung.
 func HandleSubtitle(cfg *Config) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
@@ -313,14 +127,12 @@ func HandleSubtitle(cfg *Config) http.HandlerFunc {
 		}
 		var candidates []subCandidate
 
-		// Kalau lang diisi, prioritaskan subtitle dengan kode bahasa
 		if lang != "" {
 			candidates = append(candidates,
 				subCandidate{filepath.Join(dir, base+"."+lang+".vtt"), false},
 				subCandidate{filepath.Join(dir, base+"."+lang+".srt"), true},
 			)
 		}
-		// Fallback: subtitle tanpa kode bahasa
 		candidates = append(candidates,
 			subCandidate{filepath.Join(dir, base+".vtt"), false},
 			subCandidate{filepath.Join(dir, base+".srt"), true},
@@ -353,7 +165,6 @@ func HandleSubtitle(cfg *Config) http.HandlerFunc {
 }
 
 // HandleSubtitles menangani GET /api/subtitles?path=<video-path>
-// Return daftar subtitle yang tersedia (untuk multi-bahasa support di UI).
 func HandleSubtitles(cfg *Config) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
@@ -454,7 +265,6 @@ func HandleDownload(cfg *Config) http.HandlerFunc {
 }
 
 // uniqueDestPath mengembalikan path tujuan yang tidak bentrok dengan file existing.
-// Jika "file.txt" sudah ada, coba "file (1).txt", "file (2).txt", dst.
 func uniqueDestPath(dir, filename string) string {
 	dest := filepath.Join(dir, filename)
 	if _, err := os.Stat(dest); os.IsNotExist(err) {
@@ -468,7 +278,6 @@ func uniqueDestPath(dir, filename string) string {
 			return candidate
 		}
 	}
-	// Fallback: pakai nama asli (akan overwrite)
 	return dest
 }
 
@@ -480,7 +289,6 @@ func HandleUpload(cfg *Config) http.HandlerFunc {
 			return
 		}
 
-		// Batasi ukuran upload 200MB (#14: tangkap error 413 dengan pesan ramah)
 		r.Body = http.MaxBytesReader(w, r.Body, 200<<20)
 
 		targetDir, ok := resolveSafeOrRespond(w, cfg.SharedFolder, r.URL.Query().Get("path"))
@@ -489,7 +297,6 @@ func HandleUpload(cfg *Config) http.HandlerFunc {
 		}
 
 		if err := r.ParseMultipartForm(200 << 20); err != nil {
-			// Deteksi request body too large → pesan ramah
 			if strings.Contains(err.Error(), "too large") {
 				writeJSON(w, http.StatusRequestEntityTooLarge, map[string]string{
 					"error": "Ukuran file melebihi batas 200 MB",
@@ -507,10 +314,7 @@ func HandleUpload(cfg *Config) http.HandlerFunc {
 		}
 		defer file.Close()
 
-		// Sanitasi nama file: hanya ambil base name
 		safeName := filepath.Base(header.Filename)
-
-		// Hindari overwrite file existing (#3): cari nama unik
 		destPath := uniqueDestPath(targetDir, safeName)
 		finalName := filepath.Base(destPath)
 
@@ -575,6 +379,127 @@ func HandleLogin(pinEnabled bool) http.HandlerFunc {
 			HttpOnly: true,
 			SameSite: http.SameSiteLaxMode,
 		})
+		writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+	}
+}
+
+// ===== Live Stream Handlers =====
+
+// HandleLiveStatus menangani GET /api/live/status
+func HandleLiveStatus(hub *live.Hub) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+			return
+		}
+		active := hub.IsActive()
+		resp := map[string]any{
+			"active":  active,
+			"viewers": hub.ViewerCount(),
+		}
+		if active {
+			resp["started_at"] = hub.StartedAt().Format("2006-01-02T15:04:05Z07:00")
+		}
+		w.Header().Set("Cache-Control", "no-cache")
+		writeJSON(w, http.StatusOK, resp)
+	}
+}
+
+// HandleLiveSignal menangani POST /api/live/signal
+func HandleLiveSignal(hub *live.Hub) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+			return
+		}
+		var sig live.Signal
+		if err := json.NewDecoder(r.Body).Decode(&sig); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "body tidak valid"})
+			return
+		}
+		if sig.From == "" || sig.To == "" || sig.Type == "" {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "from, to, dan type wajib diisi"})
+			return
+		}
+		hub.Forward(sig)
+		writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+	}
+}
+
+// HandleLiveEvents menangani GET /api/live/events?peer_id=<id>&role=<broadcaster|viewer>
+func HandleLiveEvents(hub *live.Hub) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+			return
+		}
+
+		id := r.URL.Query().Get("peer_id")
+		roleStr := r.URL.Query().Get("role")
+		if id == "" || (roleStr != "broadcaster" && roleStr != "viewer") {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "peer_id dan role (broadcaster|viewer) wajib diisi"})
+			return
+		}
+
+		role := live.Role(roleStr)
+		ch, err := hub.Join(role, id)
+		if err != nil {
+			writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
+			return
+		}
+		defer hub.Leave(id)
+
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Header().Set("Cache-Control", "no-cache")
+		w.Header().Set("Connection", "keep-alive")
+		w.Header().Set("X-Accel-Buffering", "no")
+
+		flusher, ok := w.(http.Flusher)
+		if !ok {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "streaming tidak didukung"})
+			return
+		}
+
+		fmt.Fprintf(w, ": connected\n\n")
+		flusher.Flush()
+
+		ctx := r.Context()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case sig, open := <-ch:
+				if !open {
+					fmt.Fprintf(w, "event: signal\ndata: {\"type\":\"bye\",\"from\":\"server\"}\n\n")
+					flusher.Flush()
+					return
+				}
+				data, err := json.Marshal(sig)
+				if err != nil {
+					continue
+				}
+				fmt.Fprintf(w, "event: signal\ndata: %s\n\n", data)
+				flusher.Flush()
+			}
+		}
+	}
+}
+
+// HandleLiveStop menangani POST /api/live/stop
+func HandleLiveStop(hub *live.Hub) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+			return
+		}
+		var body struct {
+			PeerID string `json:"peer_id"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.PeerID == "" {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "peer_id wajib diisi"})
+			return
+		}
+		hub.Leave(body.PeerID)
 		writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 	}
 }

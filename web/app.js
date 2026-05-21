@@ -5,29 +5,117 @@ const state = {
   currentPath: '',
   searchQuery: '',
   allItems: [],
-  selectedFile: null,
+  currentPlayerItem: null, // item yang sedang dibuka di player
 };
 
 // ===== DOM refs =====
 const $ = (id) => document.getElementById(id);
-const loginScreen   = $('login-screen');
-const appEl         = $('app');
-const fileList      = $('file-list');
-const spinner       = $('spinner');
-const errorBox      = $('error-box');
-const emptyMsg      = $('empty-msg');
-const breadcrumb    = $('breadcrumb');
-const searchInput   = $('search-input');
-const modalOverlay  = $('modal-overlay');
-const modalApps     = $('modal-apps');
-const modalFilename = $('modal-filename');
-const btnDownload   = $('btn-download');
-const toast         = $('toast');
-const uploadInput   = $('upload-input');
+const loginScreen = $('login-screen');
+const appEl       = $('app');
+const fileList    = $('file-list');
+const errorBox    = $('error-box');
+const emptyMsg    = $('empty-msg');
+const breadcrumb  = $('breadcrumb');
+const searchInput = $('search-input');
+const toast       = $('toast');
+const uploadInput = $('upload-input');
+
+// ===== Theme System =====
+const THEME_ICONS = {
+  light: '<path d="M12 7c-2.76 0-5 2.24-5 5s2.24 5 5 5 5-2.24 5-5-2.24-5-5-5zM2 13h2v-2H2v2zm18 0h2v-2h-2v2zM11 2v2h2V2h-2zm0 18v2h2v-2h-2zM5.99 4.58l-1.41 1.41 1.79 1.79 1.41-1.41-1.79-1.79zm12.37 12.37l-1.41 1.41 1.79 1.79 1.41-1.41-1.79-1.79zm1.79-10.96l-1.41-1.41-1.79 1.79 1.41 1.41 1.79-1.79zM7.76 17.66l-1.41-1.41-1.79 1.79 1.41 1.41 1.79-1.79z" fill="currentColor"/>',
+  dark:  '<path d="M9.37 5.51c-.18.64-.27 1.31-.27 1.99 0 4.08 3.32 7.4 7.4 7.4.68 0 1.35-.09 1.99-.27C17.45 17.19 14.93 19 12 19c-3.86 0-7-3.14-7-7 0-2.93 1.81-5.45 4.37-6.49zM12 3c-4.97 0-9 4.03-9 9s4.03 9 9 9 9-4.03 9-9c0-.46-.04-.92-.1-1.36-.98 1.37-2.58 2.26-4.4 2.26-2.98 0-5.4-2.42-5.4-5.4 0-1.81.89-3.42 2.26-4.4-.44-.06-.9-.1-1.36-.1z" fill="currentColor"/>',
+  auto:  '<path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 17.93c-3.95-.49-7-3.85-7-7.93 0-.62.08-1.21.21-1.79L9 15v1c0 1.1.9 2 2 2v1.93zm6.9-2.54c-.26-.81-1-1.39-1.9-1.39h-1v-3c0-.55-.45-1-1-1H8v-2h2c.55 0 1-.45 1-1V7h2c1.1 0 2-.9 2-2v-.41c2.93 1.19 5 4.06 5 7.41 0 2.08-.8 3.97-2.1 5.39z" fill="currentColor"/>',
+};
+const THEME_LABELS = { light: 'Light', dark: 'Dark', auto: 'Auto' };
+
+function applyTheme(mode) {
+  localStorage.setItem('theme', mode);
+  if (mode === 'auto') {
+    document.documentElement.removeAttribute('data-theme');
+  } else {
+    document.documentElement.setAttribute('data-theme', mode);
+  }
+  const icon = $('theme-icon');
+  if (icon) icon.innerHTML = THEME_ICONS[mode];
+  const lbl = $('theme-label-settings');
+  if (lbl) lbl.textContent = THEME_LABELS[mode];
+}
+
+function cycleTheme() {
+  const cur = localStorage.getItem('theme') || 'auto';
+  const next = cur === 'light' ? 'dark' : cur === 'dark' ? 'auto' : 'light';
+  applyTheme(next);
+}
+
+$('btn-theme').addEventListener('click', cycleTheme);
+const btnThemeSettings = $('btn-theme-settings');
+if (btnThemeSettings) btnThemeSettings.addEventListener('click', cycleTheme);
+
+// Init theme sebelum render
+applyTheme(localStorage.getItem('theme') || 'auto');
+
+// ===== Tab Switching =====
+let activeTab = 'home';
+
+function switchTab(tabName) {
+  activeTab = tabName;
+  document.querySelectorAll('[data-tab]').forEach(el => {
+    if (el.tagName === 'A') el.classList.toggle('active', el.dataset.tab === tabName);
+  });
+  document.querySelectorAll('section[data-tab]').forEach(s => {
+    s.classList.toggle('hidden', s.dataset.tab !== tabName);
+  });
+  // Sembunyikan file actions saat bukan di tab home
+  [$('btn-refresh'), $('btn-upload')].forEach(btn => {
+    if (btn) btn.style.display = tabName === 'home' ? '' : 'none';
+  });
+  if (tabName === 'live' && typeof initLiveTab === 'function') initLiveTab();
+}
+
+document.querySelectorAll('[data-tab]').forEach(el => {
+  if (el.tagName === 'A') {
+    el.addEventListener('click', (e) => { e.preventDefault(); switchTab(el.dataset.tab); });
+  }
+});
+
+// ===== View Toggle (List / Grid) =====
+const savedView = localStorage.getItem('view_mode') || 'list';
+if (savedView === 'grid') fileList.classList.add('grid-mode');
+$('view-list').classList.toggle('active', savedView === 'list');
+$('view-grid').classList.toggle('active', savedView === 'grid');
+
+$('view-list').addEventListener('click', () => {
+  fileList.classList.remove('grid-mode');
+  localStorage.setItem('view_mode', 'list');
+  $('view-list').classList.add('active');
+  $('view-grid').classList.remove('active');
+});
+$('view-grid').addEventListener('click', () => {
+  fileList.classList.add('grid-mode');
+  localStorage.setItem('view_mode', 'grid');
+  $('view-grid').classList.add('active');
+  $('view-list').classList.remove('active');
+});
+
+// ===== Skeleton Loading =====
+function showSkeleton(count = 6) {
+  fileList.innerHTML = Array(count).fill(0).map(() => `
+    <li class="skeleton-item">
+      <div class="skeleton skeleton-icon"></div>
+      <div class="skeleton-text">
+        <div class="skeleton skeleton-line"></div>
+        <div class="skeleton skeleton-line short"></div>
+      </div>
+    </li>
+  `).join('');
+  emptyMsg.classList.add('hidden');
+  hideError();
+}
 
 // ===== Emoji icons =====
 const EXT_ICONS = {
-  mp4: '🎬', mkv: '🎬', avi: '🎬', mov: '🎬', wmv: '🎬', flv: '🎬', webm: '🎬',  mp3: '🎵', flac: '🎵', wav: '🎵', aac: '🎵', ogg: '🎵', m4a: '🎵',
+  mp4: '🎬', mkv: '🎬', avi: '🎬', mov: '🎬', wmv: '🎬', flv: '🎬', webm: '🎬',
+  mp3: '🎵', flac: '🎵', wav: '🎵', aac: '🎵', ogg: '🎵', m4a: '🎵',
   jpg: '🖼️', jpeg: '🖼️', png: '🖼️', gif: '🖼️', bmp: '🖼️', webp: '🖼️', svg: '🖼️',
   pdf: '📕', doc: '📝', docx: '📝', xls: '📊', xlsx: '📊', ppt: '📊', pptx: '📊',
   txt: '📄', md: '📄', log: '📄', csv: '📄',
@@ -57,14 +145,10 @@ function formatDate(iso) {
 
 function escapeHtml(str) {
   return String(str)
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;');
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
 
-// ===== Path helper =====
-// Menggabungkan currentPath + nama file menjadi relative path untuk API.
 function filePathOf(item) {
   return state.currentPath ? state.currentPath + '/' + item.name : item.name;
 }
@@ -72,10 +156,7 @@ function filePathOf(item) {
 // ===== API helpers =====
 async function apiFetch(url, options = {}) {
   const res = await fetch(url, options);
-  if (res.status === 401) {
-    location.reload();
-    throw new Error('Unauthorized');
-  }
+  if (res.status === 401) { location.reload(); throw new Error('Unauthorized'); }
   return res;
 }
 
@@ -84,28 +165,22 @@ async function loadFiles(relPath = '') {
   state.currentPath = relPath;
   state.searchQuery = '';
   searchInput.value = '';
-
-  showSpinner(true);
-  hideError();
-  fileList.innerHTML = '';
-  emptyMsg.classList.add('hidden');
+  showSkeleton();
 
   try {
     const res = await apiFetch('/api/files?path=' + encodeURIComponent(relPath));
     const data = await res.json();
-
     if (!res.ok) {
+      fileList.innerHTML = '';
       showError(data.error || 'Gagal memuat file.');
       return;
     }
-
     state.allItems = data.items || [];
     renderBreadcrumb(data.path || '');
     renderFiles(state.allItems);
-  } catch (err) {
+  } catch {
+    fileList.innerHTML = '';
     showError('Tidak dapat terhubung ke server. Pastikan server berjalan.');
-  } finally {
-    showSpinner(false);
   }
 }
 
@@ -113,19 +188,14 @@ function renderFiles(items) {
   fileList.innerHTML = '';
 
   const q = state.searchQuery.toLowerCase();
-  const filtered = q
-    ? items.filter(i => i.name.toLowerCase().includes(q))
-    : items;
+  const filtered = q ? items.filter(i => i.name.toLowerCase().includes(q)) : items;
 
   filtered.sort((a, b) => {
     if (a.is_dir !== b.is_dir) return a.is_dir ? -1 : 1;
     return a.name.localeCompare(b.name, 'id');
   });
 
-  if (filtered.length === 0) {
-    emptyMsg.classList.remove('hidden');
-    return;
-  }
+  if (filtered.length === 0) { emptyMsg.classList.remove('hidden'); return; }
   emptyMsg.classList.add('hidden');
 
   const frag = document.createDocumentFragment();
@@ -138,10 +208,10 @@ function renderFiles(items) {
       ? 'Folder'
       : [formatSize(item.size), formatDate(item.mod_time)].filter(Boolean).join(' · ');
 
-    // Badge "streamable" di sebelah nama file
+    // Badge: video/audio yang bisa diputar browser
     const streamBadge = item.streamable
       ? `<span class="stream-badge">${item.streamable === 'video' ? '▶ Video' : '♪ Audio'}</span>`
-      : (item.native_play ? `<span class="native-badge">📲 App</span>` : '');
+      : (item.native_play ? `<span class="native-badge">⬇ Download</span>` : '');
 
     li.innerHTML = `
       <span class="file-icon" aria-hidden="true">${getIcon(item)}</span>
@@ -154,9 +224,19 @@ function renderFiles(items) {
 
     li.addEventListener('click', () => {
       if (item.is_dir) {
+        // Masuk folder
         loadFiles(state.currentPath ? state.currentPath + '/' + item.name : item.name);
+      } else if (item.streamable) {
+        // Video/audio yang browser support → buka custom player langsung
+        openPlayer(item);
+      } else if (item.native_play) {
+        // Format video/audio tapi browser tidak support (MKV, AVI, FLAC, dll)
+        // Buka player dengan error state + tombol download
+        openPlayerUnsupported(item);
       } else {
-        openFileModal(item);
+        // File biasa (PDF, ZIP, gambar, dll) → download langsung
+        downloadFile(item);
+        showToast('⬇ Mendownload "' + item.name + '"');
       }
     });
 
@@ -168,7 +248,6 @@ function renderFiles(items) {
 // ===== Breadcrumb =====
 function renderBreadcrumb(path) {
   breadcrumb.innerHTML = '';
-
   const homeBtn = document.createElement('span');
   homeBtn.className = 'breadcrumb-item';
   homeBtn.textContent = '🏠 Home';
@@ -179,7 +258,6 @@ function renderBreadcrumb(path) {
   breadcrumb.appendChild(homeBtn);
 
   if (!path) return;
-
   const parts = path.split('/').filter(Boolean);
   parts.forEach((part, idx) => {
     const sep = document.createElement('span');
@@ -190,7 +268,6 @@ function renderBreadcrumb(path) {
     const isLast = idx === parts.length - 1;
     const span = document.createElement('span');
     span.textContent = part;
-
     if (isLast) {
       span.className = 'breadcrumb-current';
     } else {
@@ -205,237 +282,18 @@ function renderBreadcrumb(path) {
   });
 }
 
-// ===== Modal "Open With" =====
-async function openFileModal(item) {
-  state.selectedFile = item;
-  modalFilename.textContent = item.name;
-  modalApps.innerHTML = '<div class="spinner"><div class="spinner-ring"></div></div>';
-  modalOverlay.classList.remove('hidden');
-  document.body.style.overflow = 'hidden';
-
-  try {
-    const res = await apiFetch('/api/apps?ext=' + encodeURIComponent(item.ext || ''));
-    const appList = await res.json();
-
-    modalApps.innerHTML = '';
-
-    // ── Tombol "Putar di Browser" (hanya untuk file browser-streamable) ──
-    if (item.streamable) {
-      const streamBtn = document.createElement('button');
-      streamBtn.className = 'btn-stream';
-      const icon = item.streamable === 'video' ? '▶' : '♪';
-      const label = item.streamable === 'video' ? 'Putar Video di HP' : 'Putar Audio di HP';
-      streamBtn.innerHTML = `<span class="btn-stream-icon">${icon}</span><span>${label}</span>`;
-      streamBtn.addEventListener('click', () => {
-        closeModal();
-        openPlayer(item);
-      });
-      modalApps.appendChild(streamBtn);
-    }
-
-    // ── Tombol "Buka dengan App di HP" (untuk semua file native_play) ──
-    if (item.native_play) {
-      const hpBtn = document.createElement('button');
-      hpBtn.className = 'btn-stream-secondary';
-      hpBtn.innerHTML = '<span class="btn-stream-icon">📲</span><span>Buka dengan App di HP</span>';
-      hpBtn.addEventListener('click', () => {
-        closeModal();
-        openHpAppsModal(item);
-      });
-      modalApps.appendChild(hpBtn);
-    }
-
-    // Divider sebelum daftar app laptop (hanya jika ada tombol stream di atas)
-    if (item.streamable || item.native_play) {
-      const divider = document.createElement('div');
-      divider.className = 'modal-divider';
-      const dividerLabel = document.createElement('p');
-      dividerLabel.className = 'modal-divider-label';
-      dividerLabel.textContent = 'Atau buka di laptop:';
-      modalApps.appendChild(divider);
-      modalApps.appendChild(dividerLabel);
-    }
-
-    // ── Daftar app laptop ──
-    if (!appList || appList.length === 0) {
-      const p = document.createElement('p');
-      p.style.cssText = 'color:var(--text-muted);font-size:.9rem';
-      p.textContent = 'Tidak ada aplikasi terdaftar.';
-      modalApps.appendChild(p);
-    } else {
-      for (const app of appList) {
-        const btn = document.createElement('button');
-        btn.className = 'app-btn';
-        btn.innerHTML = `<span class="app-btn-icon">🖥️</span><span>${escapeHtml(app.name)}</span>`;
-        btn.addEventListener('click', () => openWith(app.id, item));
-        modalApps.appendChild(btn);
-      }
-    }
-  } catch {
-    modalApps.innerHTML = '<p style="color:var(--danger)">Gagal memuat daftar aplikasi.</p>';
-  }
-}
-
-async function openWith(appId, item) {
-  closeModal();
-  try {
-    const res = await apiFetch('/api/open', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ app_id: appId, path: filePathOf(item) }),
-    });
-    const data = await res.json();
-    if (data.ok) {
-      showToast('✅ File dibuka di laptop');
-    } else {
-      showToast('❌ ' + (data.error || 'Gagal membuka file'), true);
-    }
-  } catch {
-    showToast('❌ Tidak dapat terhubung ke server', true);
-  }
-}
-
-function closeModal() {
-  modalOverlay.classList.add('hidden');
-  document.body.style.overflow = '';
-  state.selectedFile = null;
-}
-
-// ===== Sub-Modal "Buka dengan App di HP" =====
-
-function getStreamUrl(item) {
-  // URL absolute menggunakan location.origin (berisi IP LAN + port saat diakses dari HP)
-  return location.origin + '/api/stream?path=' + encodeURIComponent(filePathOf(item));
-}
-
-function getPlaylistUrl(item) {
-  return '/api/playlist?path=' + encodeURIComponent(filePathOf(item));
-}
-
-function openHpAppsModal(item) {
-  state.selectedFile = item;
-  $('hp-apps-filename').textContent = item.name;
-
-  // Tampilkan tombol Share hanya jika Web Share API tersedia (Chrome/Safari Android/iOS)
-  const shareBtn = $('btn-hp-share');
-  shareBtn.classList.toggle('hidden', !('share' in navigator));
-
-  $('hp-apps-overlay').classList.remove('hidden');
-  document.body.style.overflow = 'hidden';
-}
-
-function closeHpAppsModal() {
-  $('hp-apps-overlay').classList.add('hidden');
-  document.body.style.overflow = '';
-}
-
-async function handleHpAppAction(action, item) {
-  if (action === 'playlist') {
-    // Download file .m3u — user buka di app pilihan
-    const a = document.createElement('a');
-    a.href = getPlaylistUrl(item);
-    a.download = '';
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    showToast('📥 Playlist diunduh — buka untuk pilih aplikasi');
-    closeHpAppsModal();
-
-  } else if (action === 'share') {
-    // Web Share API — dialog share native HP
-    try {
-      await navigator.share({
-        title: item.name,
-        text: 'Stream dari LAN Hub',
-        url: getStreamUrl(item),
-      });
-      closeHpAppsModal();
-    } catch (e) {
-      if (e.name !== 'AbortError') {
-        showToast('Gagal berbagi link', true);
-      }
-    }
-
-  } else if (action === 'copy') {
-    const url = getStreamUrl(item);
-    try {
-      await navigator.clipboard.writeText(url);
-      showToast('✅ Link disalin ke clipboard');
-    } catch {
-      // Fallback: navigator.clipboard tidak tersedia di HTTP non-secure
-      showCopyFallbackModal(url);
-    }
-    closeHpAppsModal();
-  }
-}
-
-// Tahap 4: Fallback clipboard untuk browser yang block navigator.clipboard di HTTP
-function showCopyFallbackModal(url) {
-  const overlay = document.createElement('div');
-  overlay.className = 'modal-overlay';
-  overlay.style.zIndex = '500';
-  overlay.innerHTML = `
-    <div class="modal">
-      <div class="modal-header">
-        <h2>Salin Link Manual</h2>
-        <button class="icon-btn" id="copy-fallback-close">✕</button>
-      </div>
-      <p style="font-size:.85rem;color:var(--text-muted);margin-bottom:4px">
-        Browser tidak izinkan auto-copy. Tap teks di bawah, pilih semua, lalu copy:
-      </p>
-      <textarea readonly class="copy-fallback-text">${escapeHtml(url)}</textarea>
-    </div>
-  `;
-  document.body.appendChild(overlay);
-  document.body.style.overflow = 'hidden';
-
-  const textarea = overlay.querySelector('textarea');
-  // Auto-select saat focus (memudahkan user di mobile)
-  textarea.addEventListener('focus', () => {
-    textarea.select();
-    // iOS workaround
-    textarea.setSelectionRange(0, 99999);
-  });
-  // Focus otomatis
-  setTimeout(() => textarea.focus(), 50);
-
-  overlay.querySelector('#copy-fallback-close').addEventListener('click', () => {
-    overlay.remove();
-    document.body.style.overflow = '';
-  });
-  overlay.addEventListener('click', (e) => {
-    if (e.target === overlay) {
-      overlay.remove();
-      document.body.style.overflow = '';
-    }
-  });
-}
-
-// Event listener sub-modal HP apps (delegasi ke data-action)
-$('hp-apps-overlay').addEventListener('click', (e) => {
-  if (e.target === $('hp-apps-overlay')) {
-    closeHpAppsModal();
-    return;
-  }
-  const btn = e.target.closest('[data-action]');
-  if (btn && state.selectedFile) {
-    handleHpAppAction(btn.dataset.action, state.selectedFile);
-  }
-});
-$('hp-apps-close').addEventListener('click', closeHpAppsModal);
-
 // ===== Player (streaming) =====
 const playerOverlay = $('player-overlay');
 const playerTitle   = $('player-title');
 const playerPip     = $('player-pip');
 
-// AbortController untuk batalkan listener lama saat player dibuka ulang
 let playerAbort = new AbortController();
 
+// Buka player untuk format yang browser support (MP4, WebM, MP3, dll)
 function openPlayer(item) {
+  state.currentPlayerItem = item;
   const url = '/api/stream?path=' + encodeURIComponent(filePathOf(item));
 
-  // Batalkan listener sesi sebelumnya
   playerAbort.abort();
   playerAbort = new AbortController();
   const sig = playerAbort.signal;
@@ -458,48 +316,35 @@ function openPlayer(item) {
   playerSpinner.classList.remove('hidden');
   playerPip.classList.add('hidden');
 
-  // Reset custom player state
   if (typeof resetCplayer === 'function') resetCplayer();
 
   playerTitle.textContent = item.name;
   playerOverlay.classList.remove('hidden');
   document.body.style.overflow = 'hidden';
 
-  // Set state path untuk resume + queue
-  if (typeof setPlayerItem === 'function') {
-    setPlayerItem(item, filePathOf(item));
-  }
+  if (typeof setPlayerItem === 'function') setPlayerItem(item, filePathOf(item));
+  if (typeof setQueue === 'function') setQueue(state.allItems, item);
 
-  // Set queue dari semua items di folder yang sama (untuk autoplay next)
-  if (typeof setQueue === 'function') {
-    setQueue(state.allItems, item);
-  }
-
-  // Tambah history entry hanya kalau belum ada (avoid push duplikat saat next/prev queue)
   if (!history.state || !history.state.player) {
     history.pushState({ player: true }, '');
   }
 
   if (item.streamable === 'video') {
-    // Setup subtitle (async, multi-bahasa)
-    if (typeof setupSubtitle === 'function') {
-      setupSubtitle(item, filePathOf);
-    }
+    if (typeof setupSubtitle === 'function') setupSubtitle(item, filePathOf);
+    if (document.pictureInPictureEnabled) playerPip.classList.remove('hidden');
 
-    // PiP button
-    if (document.pictureInPictureEnabled) {
-      playerPip.classList.remove('hidden');
-    }
     playerVideo.addEventListener('leavepictureinpicture', () => {
-      playerPip.innerHTML = '⧉';
-      playerPip.title = 'Picture in Picture';
+      playerPip.innerHTML = '⧉'; playerPip.title = 'Picture in Picture';
     }, { signal: sig });
     playerVideo.addEventListener('enterpictureinpicture', () => {
-      playerPip.innerHTML = '⊡';
-      playerPip.title = 'Keluar Picture in Picture';
+      playerPip.innerHTML = '⊡'; playerPip.title = 'Keluar Picture in Picture';
     }, { signal: sig });
 
-    // Error handler dengan diagnostic
+    playerVideo.addEventListener('canplay', () => {
+      playerSpinner.classList.add('hidden');
+      playerVideo.play().catch(() => {});
+    }, { once: true, signal: sig });
+
     playerVideo.addEventListener('error', () => {
       playerSpinner.classList.add('hidden');
       const code = playerVideo.error?.code;
@@ -508,16 +353,15 @@ function openPlayer(item) {
         case 1: msg = 'Pemutaran dibatalkan.'; break;
         case 2: msg = 'Koneksi terputus. Cek WiFi.'; break;
         case 3: msg = 'File rusak atau codec tidak didukung browser ini.'; break;
-        case 4: msg = 'Format video tidak didukung browser ini. Coba "Buka dengan App di HP".'; break;
+        case 4: msg = 'Format video tidak didukung browser ini.'; break;
         default: msg = 'Gagal memutar video.';
       }
       if (playerErrorMsg) playerErrorMsg.textContent = msg;
       if (playerError) playerError.classList.remove('hidden');
-    }, { signal: sig });
+    }, { once: true, signal: sig });
 
     playerVideo.src = url;
     playerVideo.load();
-    playerVideo.play().catch(() => {});
 
   } else if (item.streamable === 'audio') {
     playerAudioTitle.textContent = item.name;
@@ -548,201 +392,56 @@ function openPlayer(item) {
   }
 }
 
+// Buka player untuk format yang browser TIDAK support (MKV, AVI, FLAC, dll)
+// Langsung tampilkan error state + tombol download
+function openPlayerUnsupported(item) {
+  state.currentPlayerItem = item;
+
+  const playerVideo     = $('player-video');
+  const playerAudio     = $('player-audio');
+  const playerAudioWrap = $('player-audio-wrap');
+  const playerSpinner   = $('player-spinner');
+  const playerError     = $('player-error');
+  const playerErrorMsg  = $('player-error-msg');
+
+  playerVideo.pause();
+  playerAudio.pause();
+  playerVideo.src = '';
+  playerAudio.src = '';
+  playerAudioWrap.classList.add('hidden');
+  playerSpinner.classList.add('hidden');
+
+  if (typeof resetCplayer === 'function') resetCplayer();
+
+  playerTitle.textContent = item.name;
+  playerOverlay.classList.remove('hidden');
+  document.body.style.overflow = 'hidden';
+
+  // Tampilkan error state langsung
+  const ext = (item.ext || '').toUpperCase();
+  if (playerErrorMsg) {
+    playerErrorMsg.textContent = 'Format ' + ext + ' tidak didukung browser ini.';
+  }
+  if (playerError) playerError.classList.remove('hidden');
+
+  if (!history.state || !history.state.player) {
+    history.pushState({ player: true }, '');
+  }
+}
+
 function closePlayer() {
   playerAbort.abort();
   playerAbort = new AbortController();
-
   const playerVideo = $('player-video');
   const playerAudio = $('player-audio');
   playerVideo.pause();
   playerAudio.pause();
   playerVideo.src = '';
   playerAudio.src = '';
-
-  // Reset custom player
   if (typeof resetCplayer === 'function') resetCplayer();
-
   playerOverlay.classList.add('hidden');
   document.body.style.overflow = '';
 }
-
-// Tombol close player
-$('player-close').addEventListener('click', () => {
-  closePlayer();
-  if (history.state && history.state.player) history.back();
-});
-
-// Tombol back fisik HP
-window.addEventListener('popstate', () => {
-  if (!playerOverlay.classList.contains('hidden')) {
-    closePlayer();
-  }
-});
-
-// Picture-in-Picture
-playerPip.addEventListener('click', async () => {
-  const playerVideo = $('player-video');
-  try {
-    if (document.pictureInPictureElement) {
-      await document.exitPictureInPicture();
-    } else {
-      await playerVideo.requestPictureInPicture();
-    }
-  } catch {
-    showToast('PiP tidak didukung di browser ini', true);
-  }
-});
-
-// Poin #4: AbortController untuk batalkan listener lama saat player dibuka ulang.
-// Mencegah race condition: listener 'error' lama fire saat src di-clear.
-let playerAbort = new AbortController();
-
-function openPlayer(item) {
-  const url = '/api/stream?path=' + encodeURIComponent(filePathOf(item));
-
-  // Batalkan semua listener dari sesi player sebelumnya
-  playerAbort.abort();
-  playerAbort = new AbortController();
-  const sig = playerAbort.signal;
-
-  // Reset semua state player
-  playerVideo.pause();
-  playerAudio.pause();
-  playerVideo.src = '';
-  playerAudio.src = '';
-  playerVideo.classList.add('hidden');
-  playerAudioWrap.classList.add('hidden');
-  playerError.classList.add('hidden');
-  playerSpinner.classList.remove('hidden');
-  playerPip.classList.add('hidden');
-
-  playerTitle.textContent = item.name;
-  playerOverlay.classList.remove('hidden');
-  document.body.style.overflow = 'hidden';
-
-  // Tambah history entry supaya tombol back HP menutup player
-  history.pushState({ player: true }, '');
-
-  if (item.streamable === 'video') {
-    playerVideo.classList.remove('hidden');
-
-    // Tampilkan PiP button jika browser mendukung
-    if (document.pictureInPictureEnabled) {
-      playerPip.classList.remove('hidden');
-    }
-
-    // Pasang listener dengan signal — otomatis di-remove saat playerAbort.abort()
-    playerVideo.addEventListener('canplay', onVideoCanPlay, { once: true, signal: sig });
-    playerVideo.addEventListener('error', onVideoError, { once: true, signal: sig });
-
-    // Poin #14: update PiP button saat user keluar dari PiP
-    playerVideo.addEventListener('leavepictureinpicture', () => {
-      playerPip.textContent = '⧉';
-      playerPip.title = 'Picture in Picture';
-    }, { signal: sig });
-    playerVideo.addEventListener('enterpictureinpicture', () => {
-      playerPip.textContent = '⊡';
-      playerPip.title = 'Keluar Picture in Picture';
-    }, { signal: sig });
-
-    playerVideo.src = url;
-    playerVideo.load();
-
-  } else if (item.streamable === 'audio') {
-    playerAudioTitle.textContent = item.name;
-    playerAudioWrap.classList.remove('hidden');
-
-    // Poin #9: audio juga punya loading state — spinner tetap tampil sampai canplay
-    playerAudio.addEventListener('canplay', onAudioCanPlay, { once: true, signal: sig });
-    playerAudio.addEventListener('error', onAudioError, { once: true, signal: sig });
-
-    playerAudio.src = url;
-    playerAudio.load();
-    playerAudio.play().catch(() => { /* autoplay blocked — user tap play */ });
-  }
-}
-
-function onVideoCanPlay() {
-  playerSpinner.classList.add('hidden');
-  playerVideo.play().catch(() => { /* autoplay blocked */ });
-}
-
-// Poin #10: diagnostic error berdasarkan MediaError.code
-function onVideoError() {
-  playerSpinner.classList.add('hidden');
-  playerVideo.classList.add('hidden');
-  const code = playerVideo.error?.code;
-  let msg;
-  switch (code) {
-    case 1: msg = 'Pemutaran dibatalkan.'; break;                          // MEDIA_ERR_ABORTED
-    case 2: msg = 'Koneksi terputus saat memuat video. Cek WiFi.'; break;  // MEDIA_ERR_NETWORK
-    case 3: msg = 'File rusak atau codec tidak didukung browser ini.'; break; // MEDIA_ERR_DECODE
-    case 4: msg = 'Format video tidak didukung browser ini. Coba download.'; break; // MEDIA_ERR_SRC_NOT_SUPPORTED
-    default: msg = 'Gagal memutar video.';
-  }
-  playerErrorMsg.textContent = msg;
-  playerError.classList.remove('hidden');
-}
-
-// Poin #9: audio canplay handler
-function onAudioCanPlay() {
-  playerSpinner.classList.add('hidden');
-}
-
-// Poin #10: diagnostic error audio
-function onAudioError() {
-  playerAudioWrap.classList.add('hidden');
-  playerSpinner.classList.add('hidden');
-  const code = playerAudio.error?.code;
-  let msg;
-  switch (code) {
-    case 2: msg = 'Koneksi terputus saat memuat audio. Cek WiFi.'; break;
-    case 3: msg = 'File rusak atau codec tidak didukung browser ini.'; break;
-    case 4: msg = 'Format audio tidak didukung browser ini. Coba download.'; break;
-    default: msg = 'Gagal memutar audio.';
-  }
-  playerErrorMsg.textContent = msg;
-  playerError.classList.remove('hidden');
-}
-
-function closePlayer() {
-  // Batalkan semua listener aktif
-  playerAbort.abort();
-  playerAbort = new AbortController();
-
-  playerVideo.pause();
-  playerAudio.pause();
-  playerVideo.src = '';
-  playerAudio.src = '';
-  playerOverlay.classList.add('hidden');
-  document.body.style.overflow = '';
-}
-
-// Tombol close player
-$('player-close').addEventListener('click', () => {
-  closePlayer();
-  if (history.state && history.state.player) history.back();
-});
-
-// Tombol back fisik HP
-window.addEventListener('popstate', () => {
-  if (!playerOverlay.classList.contains('hidden')) {
-    closePlayer();
-  }
-});
-
-// Picture-in-Picture
-playerPip.addEventListener('click', async () => {
-  try {
-    if (document.pictureInPictureElement) {
-      await document.exitPictureInPicture();
-    } else {
-      await playerVideo.requestPictureInPicture();
-    }
-  } catch {
-    showToast('PiP tidak didukung di browser ini', true);
-  }
-});
 
 // ===== Download =====
 function downloadFile(item) {
@@ -755,10 +454,10 @@ function downloadFile(item) {
 }
 
 // ===== Upload =====
-async function uploadFiles(fileList, targetPath) {
+async function uploadFiles(files, targetPath) {
   let successCount = 0;
   let failCount = 0;
-  for (const file of fileList) {
+  for (const file of files) {
     const formData = new FormData();
     formData.append('file', file);
     try {
@@ -867,10 +566,6 @@ async function submitPIN() {
 }
 
 // ===== UI helpers =====
-function showSpinner(show) {
-  spinner.classList.toggle('hidden', !show);
-}
-
 function showError(msg) {
   errorBox.textContent = msg;
   errorBox.classList.remove('hidden');
@@ -890,9 +585,10 @@ function showToast(msg, isError = false) {
   toastTimer = setTimeout(() => toast.classList.add('hidden'), 3000);
 }
 
-// ===== Event listeners =====
-$('btn-refresh').addEventListener('click', () => loadFiles(state.currentPath));
+// ===== Event Listeners =====
 
+// Header actions
+$('btn-refresh').addEventListener('click', () => loadFiles(state.currentPath));
 $('btn-upload').addEventListener('click', () => uploadInput.click());
 
 uploadInput.addEventListener('change', () => {
@@ -902,21 +598,61 @@ uploadInput.addEventListener('change', () => {
   }
 });
 
-$('modal-close').addEventListener('click', closeModal);
-modalOverlay.addEventListener('click', (e) => {
-  if (e.target === modalOverlay) closeModal();
-});
-
-btnDownload.addEventListener('click', () => {
-  downloadFile(state.selectedFile);
-  closeModal();
-});
-
+// Search
 searchInput.addEventListener('input', () => {
   state.searchQuery = searchInput.value;
   renderFiles(state.allItems);
 });
 
+// Player: close
+$('player-close').addEventListener('click', () => {
+  closePlayer();
+  if (history.state && history.state.player) history.back();
+});
+
+// Player: tombol download di header
+$('player-download').addEventListener('click', () => {
+  if (state.currentPlayerItem) {
+    downloadFile(state.currentPlayerItem);
+    showToast('⬇ Mendownload "' + state.currentPlayerItem.name + '"');
+  }
+});
+
+// Player: tombol download di error state (format tidak didukung)
+$('player-error-download').addEventListener('click', () => {
+  if (state.currentPlayerItem) {
+    downloadFile(state.currentPlayerItem);
+    showToast('⬇ Mendownload "' + state.currentPlayerItem.name + '"');
+  }
+});
+
+// Player: PiP
+playerPip.addEventListener('click', async () => {
+  const playerVideo = $('player-video');
+  try {
+    if (document.pictureInPictureElement) {
+      await document.exitPictureInPicture();
+    } else {
+      await playerVideo.requestPictureInPicture();
+    }
+  } catch {
+    showToast('PiP tidak didukung di browser ini', true);
+  }
+});
+
+// Tombol back fisik HP
+window.addEventListener('popstate', () => {
+  if (!playerOverlay.classList.contains('hidden')) closePlayer();
+});
+
+// Keyboard shortcuts global
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') {
+    if (!playerOverlay.classList.contains('hidden')) closePlayer();
+  }
+});
+
+// PIN inputs
 document.querySelectorAll('.pin-digit').forEach((input, idx, all) => {
   input.addEventListener('input', () => {
     if (input.value && idx < all.length - 1) all[idx + 1].focus();
@@ -926,22 +662,8 @@ document.querySelectorAll('.pin-digit').forEach((input, idx, all) => {
     if (e.key === 'Backspace' && !input.value && idx > 0) all[idx - 1].focus();
   });
 });
-
 $('btn-login').addEventListener('click', submitPIN);
 
-document.addEventListener('keydown', (e) => {
-  if (e.key === 'Escape') {
-    if (!$('player-overlay').classList.contains('hidden')) {
-      closePlayer();
-    } else if (!$('hp-apps-overlay').classList.contains('hidden')) {
-      closeHpAppsModal();
-    } else {
-      closeModal();
-    }
-  }
-});
-
 // ===== Init =====
-// Inisialisasi custom player setelah DOM siap
 if (typeof initCplayer === 'function') initCplayer();
 checkAuth();

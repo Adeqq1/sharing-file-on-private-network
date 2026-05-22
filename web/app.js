@@ -324,6 +324,21 @@ function openPlayer(item) {
   if (typeof setPlayerItem === 'function') setPlayerItem(item, filePathOf(item));
   if (typeof setQueue === 'function') setQueue(state.allItems, item);
 
+  // Untuk video transcode, fetch durasi penuh dari /api/probe agar progress bar
+  // menampilkan total durasi (bukan sisa dari titik mulai setelah seek).
+  if (item.needs_transcode && item.streamable === 'video') {
+    fetch('/api/probe?path=' + encodeURIComponent(filePathOf(item)))
+      .then(r => r.ok ? r.json() : null)
+      .then(probe => {
+        if (probe && probe.duration && typeof setTotalDuration === 'function') {
+          setTotalDuration(probe.duration, true /*isTranscoded*/);
+        }
+      })
+      .catch(() => { /* probe gagal — fallback ke video.duration native */ });
+  } else {
+    if (typeof setTotalDuration === 'function') setTotalDuration(0, false);
+  }
+
   if (!history.state || !history.state.player) {
     history.pushState({ player: true }, '');
   }

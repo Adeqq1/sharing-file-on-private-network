@@ -122,46 +122,101 @@ func HandleSubtitle(cfg *Config) http.HandlerFunc {
 		dir := filepath.Dir(target)
 		base := strings.TrimSuffix(info.Name(), filepath.Ext(info.Name()))
 
-		type subCandidate struct {
-			path  string
-			isSRT bool
-		}
-		var candidates []subCandidate
-
-		if lang != "" {
-			candidates = append(candidates,
-				subCandidate{filepath.Join(dir, base+"."+lang+".vtt"), false},
-				subCandidate{filepath.Join(dir, base+"."+lang+".srt"), true},
-			)
-		}
-		candidates = append(candidates,
-			subCandidate{filepath.Join(dir, base+".vtt"), false},
-			subCandidate{filepath.Join(dir, base+".srt"), true},
-		)
-
-		for _, c := range candidates {
-			if _, err := os.Stat(c.path); err != nil {
-				continue
-			}
-			data, err := os.ReadFile(c.path)
-			if err != nil {
-				writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "gagal membaca subtitle"})
-				return
-			}
-
-			w.Header().Set("Content-Type", "text/vtt; charset=utf-8")
-			w.Header().Set("Cache-Control", "no-cache")
-			w.Header().Set("Access-Control-Allow-Origin", "*")
-
-			if c.isSRT {
-				w.Write([]byte(subtitle.SRTToVTT(string(data))))
-			} else {
-				w.Write(data)
-			}
+		// Baca semua entri di folder lalu cari subtitle yang cocok via MatchSubtitleFile.
+		// Pendekatan ini mendukung semua pola penamaan (., _, -) dan case-insensitive.
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "gagal membaca folder"})
 			return
 		}
 
-		writeJSON(w, http.StatusNotFound, map[string]string{"error": "subtitle tidak ditemukan"})
+		type foundSub struct {
+			path  string
+			isSRT bool
+			lang  string // "" = default
+		}
+		var matches []foundSub
+		for _, e := range entries {
+			if e.IsDir() {
+				continue
+			}
+			matchLang, ok := subtitle.MatchSubtitleFile(base, e.Name())
+			if !ok {
+				continue
+			}
+			matches = append(matches, foundSub{
+				path:  filepath.Join(dir, e.Name()),
+				isSRT: strings.EqualFold(filepath.Ext(e.Name()), ".srt"),
+				lang:  matchLang,
+			})
+		}
+
+		// Pilih subtitle dengan prioritas:
+		// 1. Lang yang diminta + VTT (tidak perlu konversi)
+		// 2. Lang yang diminta + SRT
+		// 3. Default ("") + VTT
+		// 4. Default ("") + SRT
+		// 5. Subtitle pertama yang ditemukan (fallback)
+		var chosen *foundSub
+		priorities := []struct {
+			wantLang string
+			wantVTT  bool
+		}{
+			{lang, false}, // lang diminta, SRT atau VTT
+			{"", false},   // default, SRT atau VTT
+		}
+		// Cari VTT dulu untuk lang yang diminta, lalu SRT, lalu default
+		for _, p := range priorities {
+			// Coba VTT dulu
+			for i := range matches {
+				if matches[i].lang == p.wantLang && !matches[i].isSRT {
+					chosen = &matches[i]
+					break
+				}
+			}
+			if chosen != nil {
+				break
+			}
+			// Lalu SRT
+			for i := range matches {
+				if matches[i].lang == p.wantLang {
+					chosen = &matches[i]
+					break
+				}
+			}
+			if chosen != nil {
+				break
+			}
+		}
+		// Fallback: subtitle pertama yang ada
+		if chosen == nil && len(matches) > 0 {
+			chosen = &matches[0]
+		}
+
+		if chosen == nil {
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": "subtitle tidak ditemukan"})
+			return
+		}
+
+		data, err := os.ReadFile(chosen.path)
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "gagal membaca subtitle"})
+			return
+		}
+
+		w.Header().Set("Content-Type", "text/vtt; charset=utf-8")
+		w.Header().Set("Cache-Control", "no-cache")
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+
+		if chosen.isSRT {
+			// SRTToVTT sudah handle: encoding, BOM, tag cleaning, timestamp conversion
+			w.Write([]byte(subtitle.SRTToVTT(data)))
+		} else {
+			// VTT: tetap strip BOM dan pastikan encoding UTF-8
+			content := subtitle.ToUTF8(data)
+			content = subtitle.StripBOM(content)
+			w.Write([]byte(content))
+		}
 	}
 }
 
@@ -203,23 +258,15 @@ func HandleSubtitles(cfg *Config) http.HandlerFunc {
 			if e.IsDir() {
 				continue
 			}
-			n := e.Name()
-			ext := strings.ToLower(filepath.Ext(n))
-			if ext != ".srt" && ext != ".vtt" {
+			lang, ok := subtitle.MatchSubtitleFile(baseName, e.Name())
+			if !ok {
 				continue
 			}
-			stem := strings.TrimSuffix(n, ext)
-			if stem == baseName {
-				results = append(results, subInfo{Lang: "", Label: "Default"})
-				continue
+			label := "Default"
+			if lang != "" {
+				label = langLabel(lang)
 			}
-			if strings.HasPrefix(stem, baseName+".") {
-				code := strings.TrimPrefix(stem, baseName+".")
-				results = append(results, subInfo{
-					Lang:  code,
-					Label: langLabel(code),
-				})
-			}
+			results = append(results, subInfo{Lang: lang, Label: label})
 		}
 
 		writeJSON(w, http.StatusOK, results)

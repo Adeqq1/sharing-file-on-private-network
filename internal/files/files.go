@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"lan-server/internal/media"
+	"lan-server/internal/subtitle"
 	"os"
 	"path/filepath"
 	"strings"
@@ -90,23 +91,16 @@ func List(sharedRoot, relPath string) (*ListResult, error) {
 		if !e.IsDir() {
 			ext = strings.ToLower(strings.TrimPrefix(filepath.Ext(e.Name()), "."))
 		}
-		// Cek subtitle untuk file video
+		// Cek subtitle untuk file video — pakai MatchSubtitleFile agar konsisten
+		// dengan handler API (support pola ., _, -, case-insensitive).
 		hasSubtitle := false
 		if media.KindForBrowser(ext) == media.KindVideo {
 			base := strings.TrimSuffix(e.Name(), filepath.Ext(e.Name()))
-			// Cari file subtitle: <base>.{srt,vtt} atau <base>.{lang}.{srt,vtt}
-			// Pakai globbing manual via ReadDir lagi terlalu mahal — pakai prefix match
 			for _, sib := range entries {
 				if sib.IsDir() {
 					continue
 				}
-				sn := sib.Name()
-				sext := strings.ToLower(filepath.Ext(sn))
-				if sext != ".srt" && sext != ".vtt" {
-					continue
-				}
-				stem := strings.TrimSuffix(sn, sext)
-				if stem == base || strings.HasPrefix(stem, base+".") {
+				if _, ok := subtitle.MatchSubtitleFile(base, sib.Name()); ok {
 					hasSubtitle = true
 					break
 				}

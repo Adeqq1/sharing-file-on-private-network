@@ -388,6 +388,8 @@ Semua endpoint butuh cookie `auth` jika `pin_enabled: true`.
 | `GET` | `/api/apps` | `?ext=<extension>` | `[{id, name}]` |
 | `POST` | `/api/open` | `{app_id, path}` | `{ok: true}` |
 | `GET` | `/api/download` | `?path=<relative>` | File stream (attachment) |
+| `GET` | `/api/stream` | `?path=<relative>` | File stream (inline, support Range/seek) |
+| `GET` | `/api/transcode` | `?path=<relative>&t=<detik>` | fMP4 stream dari ffmpeg, mulai dari posisi `t` detik (default 0) |
 | `POST` | `/api/upload` | `?path=<folder>` + multipart `file` | `{ok: true, name}` |
 | `POST` | `/api/login` | `{pin}` | `{ok: true}` + cookie `auth` |
 

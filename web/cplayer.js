@@ -25,10 +25,19 @@ const cplayer = {
     rafId: null,
     fsTransition: false,     // flag anti race-condition: true saat requestFullscreen sedang pending
     cssRotated: false,       // flag CSS rotate mode (putar player 90° tanpa fullscreen API)
+    // ── Seek support untuk video transcode ──
+    transcodeOffset: 0,      // detik offset saat ini untuk video transcode (0 = dari awal)
+    totalDuration: 0,        // durasi penuh video dari /api/probe (untuk display & seek)
+    isTranscoded: false,     // true kalau src berasal dari /api/transcode
+    pendingSeek: null,       // detik tujuan saat seek sedang dalam proses (untuk debounce)
   },
   abort: null, // AbortController untuk listener per-video
 };
 
+// ── Konstanta seek ───────────────────────────────────────────────────────────
+const SEEK_DEBOUNCE_MS  = 250; // ms tunggu setelah drag sebelum spawn ffmpeg
+const RESUME_MIN_SEC    = 5;   // posisi tersimpan < 5 detik diabaikan
+const RESUME_MARGIN_SEC = 10;  // posisi tersimpan < (durasi - 10s) agar tidak loop di akhir
 // Detect iOS — volume tidak bisa diset programmatically
 const IS_IOS = /iPad|iPhone|iPod/.test(navigator.userAgent) && !window.MSStream;
 
@@ -95,11 +104,20 @@ function setupVideoEvents() {
 
   v.addEventListener('loadedmetadata', () => {
     updateTimeUI();
-    // Resume playback position (poin #13)
+    // Resume playback position
     const path = cplayer.state.currentPath;
-    if (path) {
-      const saved = parseFloat(localStorage.getItem('cp_pos_' + path) || '0');
-      if (saved > 5 && isFinite(v.duration) && saved < v.duration - 10) {
+    if (!path) return;
+
+    // Skip auto-resume kalau sudah di-reload dari offset (transcodeOffset > 0)
+    if (cplayer.state.transcodeOffset > 0) return;
+
+    const saved = parseFloat(localStorage.getItem('cp_pos_' + path) || '0');
+    const fullDur = effectiveDuration();
+    if (saved > RESUME_MIN_SEC && isFinite(fullDur) && saved < fullDur - RESUME_MARGIN_SEC) {
+      if (cplayer.state.isTranscoded) {
+        requestTranscodeSeek(saved);
+        showToastFromPlayer(`▶ Lanjut dari ${formatTime(saved)}`);
+      } else {
         v.currentTime = saved;
         showToastFromPlayer(`▶ Lanjut dari ${formatTime(saved)}`);
       }
@@ -114,7 +132,8 @@ function setupVideoEvents() {
 
     // Save resume position throttled (tiap 5 detik)
     if (Math.floor(v.currentTime) % 5 === 0 && cplayer.state.currentPath) {
-      localStorage.setItem('cp_pos_' + cplayer.state.currentPath, v.currentTime);
+      localStorage.setItem('cp_pos_' + cplayer.state.currentPath,
+        effectiveCurrentTime());
     }
   });
 
@@ -236,6 +255,12 @@ function setupControlEvents() {
     cplayer.dom.progress.addEventListener('pointerup', () => {
       cplayer.state.isDragging = false;
       cplayer.dom.progress.classList.remove('dragging');
+      // Flush seek segera saat user lepas mouse/jari — skip sisa debounce
+      // agar seek terasa responsif (tidak perlu tunggu 250ms lagi).
+      if (cplayer.state.pendingSeek != null && cplayer.state.isTranscoded) {
+        clearTimeout(_seekDebounceTimer);
+        _flushTranscodeSeek();
+      }
       resetHideTimer();
     });
     cplayer.dom.progress.addEventListener('pointerleave', () => {
@@ -445,8 +470,7 @@ function setupGestureEvents() {
       // Double-tap: skip
       cplayer.state.lastTap = 0;
       const skip = isRight ? 10 : -10;
-      v.currentTime = Math.max(0,
-        Math.min(v.duration || 0, v.currentTime + skip));
+      seekRelative(skip);
       showSkipIndicator(isRight);
       showRipple(isRight, e.clientX - rect.left, e.clientY - rect.top);
       showControls();
@@ -681,7 +705,12 @@ function setupKeyboardShortcuts() {
     if (e.key >= '0' && e.key <= '9' && !e.ctrlKey && !e.altKey) {
       e.preventDefault();
       const pct = parseInt(e.key) / 10;
-      v.currentTime = pct * (v.duration || 0);
+      const target = pct * (effectiveDuration() || 0);
+      if (cplayer.state.isTranscoded) {
+        requestTranscodeSeek(target);
+      } else {
+        cplayer.video.currentTime = target;
+      }
       showControls();
       return;
     }
@@ -694,22 +723,22 @@ function setupKeyboardShortcuts() {
         break;
       case 'ArrowLeft':
         e.preventDefault();
-        v.currentTime = Math.max(0, v.currentTime - 5);
+        seekRelative(-5);
         showControls();
         break;
       case 'ArrowRight':
         e.preventDefault();
-        v.currentTime = Math.min(v.duration || 0, v.currentTime + 5);
+        seekRelative(5);
         showControls();
         break;
       case 'j':
         e.preventDefault();
-        v.currentTime = Math.max(0, v.currentTime - 10);
+        seekRelative(-10);
         showControls();
         break;
       case 'l':
         e.preventDefault();
-        v.currentTime = Math.min(v.duration || 0, v.currentTime + 10);
+        seekRelative(10);
         showControls();
         break;
       case 'ArrowUp':
@@ -745,15 +774,19 @@ function setupKeyboardShortcuts() {
           showControls();
         }
         break;
-      // Frame seeking
+      // Frame seeking — hanya untuk video native (transcode terlalu mahal per-frame)
       case ',':
         e.preventDefault();
-        if (v.paused) v.currentTime = Math.max(0, v.currentTime - 1/30);
+        if (v.paused && !cplayer.state.isTranscoded) {
+          v.currentTime = Math.max(0, v.currentTime - 1/30);
+        }
         showControls();
         break;
       case '.':
         e.preventDefault();
-        if (v.paused) v.currentTime = Math.min(v.duration || 0, v.currentTime + 1/30);
+        if (v.paused && !cplayer.state.isTranscoded) {
+          v.currentTime = Math.min(v.duration || 0, v.currentTime + 1/30);
+        }
         showControls();
         break;
     }
@@ -908,10 +941,94 @@ function seekToPointer(e) {
   const rect = cplayer.dom.progress.getBoundingClientRect();
   const clientX = e.clientX ?? e.touches?.[0]?.clientX ?? 0;
   const ratio = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
-  if (isFinite(cplayer.video.duration)) {
-    cplayer.video.currentTime = ratio * cplayer.video.duration;
+
+  const fullDur = effectiveDuration();
+  if (!isFinite(fullDur) || fullDur <= 0) return;
+  const targetTime = ratio * fullDur;
+
+  if (cplayer.state.isTranscoded) {
+    // Video transcode: tidak bisa native seek, harus reload src dengan ?t=...
+    requestTranscodeSeek(targetTime);
+  } else {
+    // Native: seek HTML5 seperti biasa
+    cplayer.video.currentTime = targetTime;
   }
   updateProgressUI();
+}
+
+// ── Seek helpers untuk video transcode ──────────────────────────────────────
+
+// effectiveDuration: durasi penuh untuk display.
+// Untuk transcode pakai totalDuration dari /api/probe, untuk native pakai video.duration.
+function effectiveDuration() {
+  if (cplayer.state.isTranscoded && cplayer.state.totalDuration > 0) {
+    return cplayer.state.totalDuration;
+  }
+  return cplayer.video?.duration ?? 0;
+}
+
+// effectiveCurrentTime: posisi absolut dalam video (offset + native currentTime).
+function effectiveCurrentTime() {
+  const native = cplayer.video?.currentTime ?? 0;
+  if (cplayer.state.isTranscoded) {
+    return cplayer.state.transcodeOffset + native;
+  }
+  return native;
+}
+
+// seekRelative: skip ±N detik, otomatis pilih native seek atau reload transcode.
+function seekRelative(deltaSec) {
+  const cur = effectiveCurrentTime();
+  const target = Math.max(0, Math.min(effectiveDuration() || 0, cur + deltaSec));
+  if (cplayer.state.isTranscoded) {
+    requestTranscodeSeek(target);
+  } else if (cplayer.video) {
+    cplayer.video.currentTime = target;
+  }
+}
+
+// Debounce timer untuk requestTranscodeSeek — file scope agar bisa di-clear di resetCplayer.
+let _seekDebounceTimer = null;
+
+// requestTranscodeSeek: reload <video>.src dengan offset baru.
+// Pakai debounce SEEK_DEBOUNCE_MS agar drag progress bar tidak spawn banyak request ffmpeg.
+// Spinner ditampilkan di dalam setTimeout (bukan di luar) agar tidak stuck
+// kalau seek dibatalkan sebelum debounce habis.
+function requestTranscodeSeek(targetSec) {
+  cplayer.state.pendingSeek = targetSec;
+  clearTimeout(_seekDebounceTimer);
+  _seekDebounceTimer = setTimeout(() => _flushTranscodeSeek(), SEEK_DEBOUNCE_MS);
+}
+
+// _flushTranscodeSeek: eksekusi seek segera (dipanggil dari debounce atau pointerup).
+// Pakai closure value dari state.pendingSeek saat dipanggil.
+function _flushTranscodeSeek() {
+  const path = cplayer.state.currentPath;
+  if (!path || cplayer.state.pendingSeek == null) return;
+
+  // Tampilkan spinner sekarang — seek benar-benar akan terjadi
+  if (cplayer.dom.spinner) cplayer.dom.spinner.classList.remove('hidden');
+
+  const t = Math.max(0, Math.floor(cplayer.state.pendingSeek));
+  cplayer.state.transcodeOffset = t;
+  cplayer.state.pendingSeek = null;
+
+  const url = '/api/transcode?' + new URLSearchParams({ path, t }).toString();
+  const v = cplayer.video;
+  const wasPaused = v.paused;
+  v.src = url;
+  v.load();
+  // Auto play setelah ready, kecuali user memang lagi pause
+  if (!wasPaused) {
+    v.addEventListener('canplay', () => v.play().catch(() => {}), { once: true });
+  }
+
+  // Peringatan subtitle offset — tampilkan sekali per session kalau subtitle aktif
+  if (cplayer.state.ccEnabled && cplayer.video.textTracks.length > 0 &&
+      !sessionStorage.getItem('cp_subOffsetWarned')) {
+    sessionStorage.setItem('cp_subOffsetWarned', '1');
+    showToastFromPlayer('⚠ Subtitle mungkin offset setelah lompat');
+  }
 }
 
 function updateHoverTime(e) {
@@ -919,16 +1036,17 @@ function updateHoverTime(e) {
   const rect = cplayer.dom.progress.getBoundingClientRect();
   const x = e.clientX - rect.left;
   const ratio = Math.max(0, Math.min(1, x / rect.width));
-  if (!isFinite(cplayer.video.duration)) return;
-  const time = ratio * cplayer.video.duration;
+  const dur = effectiveDuration();
+  if (!isFinite(dur) || dur <= 0) return;
+  const time = ratio * dur;
   cplayer.dom.hoverTime.textContent = formatTime(time);
   cplayer.dom.hoverTime.style.left = x + 'px';
 }
 
 function updateProgressUI() {
   if (!cplayer.video || !cplayer.dom.played || !cplayer.dom.handle) return;
-  const dur = cplayer.video.duration;
-  const cur = cplayer.video.currentTime;
+  const dur = effectiveDuration();
+  const cur = effectiveCurrentTime();
   const pct = isFinite(dur) && dur > 0 ? (cur / dur) * 100 : 0;
   cplayer.dom.played.style.width = pct + '%';
   cplayer.dom.handle.style.left  = pct + '%';
@@ -940,19 +1058,23 @@ function updateProgressUI() {
 
 function updateBufferedUI() {
   if (!cplayer.video || !cplayer.dom.buffered) return;
-  const dur = cplayer.video.duration;
+  const dur = effectiveDuration();
   if (!isFinite(dur) || dur === 0) return;
   const buf = cplayer.video.buffered;
   if (buf.length > 0) {
-    const pct = (buf.end(buf.length - 1) / dur) * 100;
+    // Untuk video transcode, buffered.end() relatif terhadap offset saat ini.
+    // Tambahkan transcodeOffset agar posisi buffered sesuai dengan progress bar absolut.
+    const offset = cplayer.state.transcodeOffset || 0;
+    const bufferedEnd = buf.end(buf.length - 1) + offset;
+    const pct = Math.min(100, (bufferedEnd / dur) * 100);
     cplayer.dom.buffered.style.width = pct + '%';
   }
 }
 
 function updateTimeUI() {
   if (!cplayer.dom.time || !cplayer.video) return;
-  const cur = formatTime(cplayer.video.currentTime);
-  const dur = formatTime(cplayer.video.duration);
+  const cur = formatTime(effectiveCurrentTime());
+  const dur = formatTime(effectiveDuration());
   cplayer.dom.time.textContent = cur + ' / ' + dur;
 }
 
@@ -1107,6 +1229,13 @@ function resetCplayer() {
   cplayer.state.fsTransition = false; // reset flag transisi fullscreen
   cplayer.state.currentSubIdx = -1;  // reset index subtitle aktif
 
+  // Reset state seek transcode
+  cplayer.state.transcodeOffset = 0;
+  cplayer.state.totalDuration   = 0;
+  cplayer.state.isTranscoded    = false;
+  cplayer.state.pendingSeek     = null;
+  clearTimeout(_seekDebounceTimer);
+
   // Reset CSS rotate kalau masih aktif saat player ditutup
   if (cplayer.state.cssRotated) {
     cplayer.state.cssRotated = false;
@@ -1124,4 +1253,15 @@ function resetCplayer() {
 function setPlayerItem(item, path) {
   cplayer.state.currentItem = item;
   cplayer.state.currentPath = path;
+}
+
+// setTotalDuration: dipanggil dari app.js setelah /api/probe berhasil.
+// Menyimpan durasi penuh dan menandai video sebagai transcode.
+// Kalau durationSec = 0 dan isTranscoded = true, flag isTranscoded tetap di-set
+// agar effectiveDuration() tahu ini transcoded (fallback ke video.duration native
+// sampai probe balik dengan durasi sesungguhnya).
+function setTotalDuration(durationSec, isTranscoded) {
+  cplayer.state.totalDuration  = durationSec || 0;
+  cplayer.state.isTranscoded   = !!isTranscoded;
+  cplayer.state.transcodeOffset = 0;
 }

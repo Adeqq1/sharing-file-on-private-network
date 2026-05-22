@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -159,6 +160,10 @@ func releaseTranscode() {
 // Stream menjalankan ffmpeg dengan argumen yang sesuai berdasarkan hasil probe,
 // lalu pipe stdout ffmpeg ke out (biasanya http.ResponseWriter).
 //
+// startSec menentukan posisi mulai dalam detik (0 = dari awal).
+// Nilai > 0 akan menambahkan flag -ss sebelum -i (input seek — cepat, lompat
+// ke keyframe terdekat).
+//
 // Strategi dipilih otomatis:
 //   - Remux only       : video H.264 + audio AAC/MP3/Opus → -c copy
 //   - Audio transcode  : video OK, audio exotic (AC3/DTS/FLAC) → -c:v copy -c:a aac
@@ -169,8 +174,8 @@ func releaseTranscode() {
 //
 // Untuk full/audio transcode, semaphore dipakai agar max 2 proses berjalan
 // bersamaan. Remux tidak dibatasi karena hampir tidak pakai CPU.
-func Stream(ctx context.Context, absPath string, probe *ProbeResult, out io.Writer) error {
-	args := buildFFmpegArgs(absPath, probe)
+func Stream(ctx context.Context, absPath string, probe *ProbeResult, startSec float64, out io.Writer) error {
+	args := buildFFmpegArgs(absPath, probe, startSec)
 	strategy := strategyName(probe)
 
 	// Batasi concurrent transcode (bukan remux) via semaphore
@@ -188,7 +193,11 @@ func Stream(ctx context.Context, absPath string, probe *ProbeResult, out io.Writ
 	cmd.Stderr = &limitedWriter{w: &stderrBuf, limit: 10 * 1024}
 	cmd.Stdout = out
 
-	log.Printf("[transcode] start: %s (%s)", absPath, strategy)
+	if startSec > 0 {
+		log.Printf("[transcode] start: %s (%s, t=%.1fs)", absPath, strategy, startSec)
+	} else {
+		log.Printf("[transcode] start: %s (%s)", absPath, strategy)
+	}
 
 	err := cmd.Run()
 
@@ -212,14 +221,26 @@ func Stream(ctx context.Context, absPath string, probe *ProbeResult, out io.Writ
 }
 
 // buildFFmpegArgs memilih argumen ffmpeg berdasarkan codec di probe.
-func buildFFmpegArgs(absPath string, probe *ProbeResult) []string {
+// startSec > 0 menambahkan -ss sebelum -i (input seek — cepat, lompat ke keyframe terdekat).
+func buildFFmpegArgs(absPath string, probe *ProbeResult, startSec float64) []string {
 	// Argumen dasar: tidak tampilkan banner, tidak interaktif
 	base := []string{
 		"-hide_banner", "-loglevel", "error",
+	}
+
+	// Input seek: pakai -ss SEBELUM -i (fast seek, lompat ke keyframe terdekat).
+	// Hanya tambahkan kalau startSec > 0 untuk hindari overhead di playback awal.
+	if startSec > 0 {
+		// Precision 1 desimal cukup — frontend sudah Math.floor, dan ffmpeg
+		// lompat ke keyframe terdekat (resolusi GOP 2-10 detik).
+		base = append(base, "-ss", strconv.FormatFloat(startSec, 'f', 1, 64))
+	}
+
+	base = append(base,
 		"-i", absPath,
 		"-map", "0:v:0",
 		"-map", "0:a:0?", // "?" = opsional, kalau tidak ada audio tetap jalan
-	}
+	)
 
 	// Pilih strategi codec
 	videoOK := probe != nil && VideoCodecCompatible(probe.VideoCodec())

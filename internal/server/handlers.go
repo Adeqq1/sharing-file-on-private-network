@@ -477,21 +477,44 @@ func HandleTranscode(cfg *Config) http.HandlerFunc {
 
 		// Kalau tidak butuh transcode → redirect ke /api/stream yang lebih efisien
 		if !transcode.NeedsTranscode(probe) {
-			http.Redirect(w, r, "/api/stream?path="+url.QueryEscape(relPath), http.StatusFound)
+			redirectURL := "/api/stream?path=" + url.QueryEscape(relPath)
+			if tStr := strings.TrimSpace(r.URL.Query().Get("t")); tStr != "" {
+				redirectURL += "&t=" + url.QueryEscape(tStr)
+			}
+			http.Redirect(w, r, redirectURL, http.StatusFound)
 			return
+		}
+
+		// Parse param ?t=<detik>. Kalau kosong/tidak ada → 0 (mulai dari awal).
+		var startSec float64
+		if tStr := strings.TrimSpace(r.URL.Query().Get("t")); tStr != "" {
+			parsed, perr := strconv.ParseFloat(tStr, 64)
+			if perr != nil || parsed < 0 {
+				writeJSON(w, http.StatusBadRequest, map[string]string{
+					"error": "parameter t tidak valid",
+				})
+				return
+			}
+			// Validasi: t tidak boleh ≥ durasi (kasih buffer 0.5 detik)
+			if probe.Duration > 0 && parsed >= probe.Duration-0.5 {
+				writeJSON(w, http.StatusBadRequest, map[string]string{
+					"error": "t melebihi durasi video",
+				})
+				return
+			}
+			startSec = parsed
 		}
 
 		// Set header sebelum ffmpeg dijalankan — setelah body mulai dikirim, header tidak bisa diubah
 		w.Header().Set("Content-Type", "video/mp4")
 		w.Header().Set("Cache-Control", "no-store")
 		// Tidak set Content-Length karena ukuran output transcode tidak diketahui di awal
-		// TODO: Implementasi Range request / HLS untuk seek-friendly playback (follow-up issue)
 
 		if r.Method == http.MethodHead {
 			return
 		}
 
-		if err := transcode.Stream(r.Context(), target, probe, w); err != nil {
+		if err := transcode.Stream(r.Context(), target, probe, startSec, w); err != nil {
 			// Error setelah header dikirim tidak bisa dikembalikan sebagai HTTP error
 			// Cukup log — client akan melihat koneksi terputus
 			return

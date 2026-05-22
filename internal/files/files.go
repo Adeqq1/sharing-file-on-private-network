@@ -105,6 +105,12 @@ func List(sharedRoot, relPath string) (*ListResult, error) {
 					break
 				}
 			}
+			// MKV/MP4/MOV/WebM kemungkinan besar punya embedded subtitle.
+			// Set true secara defensif agar badge subtitle muncul di file list.
+			// Verifikasi sesungguhnya dilakukan saat user buka video (via ffprobe).
+			if !hasSubtitle && (ext == "mkv" || ext == "mp4" || ext == "mov" || ext == "webm") {
+				hasSubtitle = true
+			}
 		}
 
 		items = append(items, Item{

@@ -5,13 +5,16 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"lan-server/internal/embed"
 	"lan-server/internal/files"
 	"lan-server/internal/live"
 	"lan-server/internal/media"
 	"lan-server/internal/subtitle"
+	"log"
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -98,7 +101,7 @@ func HandleStream(cfg *Config) http.HandlerFunc {
 	}
 }
 
-// HandleSubtitle menangani GET /api/subtitle?path=<video-path>&lang=<id|en|...>
+// HandleSubtitle menangani GET /api/subtitle?path=<video-path>&lang=<id|en|embed:N|...>
 func HandleSubtitle(cfg *Config) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
@@ -116,6 +119,18 @@ func HandleSubtitle(cfg *Config) http.HandlerFunc {
 		info, err := os.Stat(target)
 		if err != nil || info.IsDir() {
 			writeJSON(w, http.StatusNotFound, map[string]string{"error": "file tidak ditemukan"})
+			return
+		}
+
+		// Cek apakah ini request embedded subtitle (lang = "embed:<streamIndex>")
+		if strings.HasPrefix(lang, "embed:") {
+			indexStr := strings.TrimPrefix(lang, "embed:")
+			streamIndex, err := strconv.Atoi(indexStr)
+			if err != nil || streamIndex < 0 {
+				writeJSON(w, http.StatusBadRequest, map[string]string{"error": "stream index tidak valid"})
+				return
+			}
+			serveEmbeddedSubtitle(w, r, cfg, target, streamIndex)
 			return
 		}
 
@@ -160,12 +175,10 @@ func HandleSubtitle(cfg *Config) http.HandlerFunc {
 		var chosen *foundSub
 		priorities := []struct {
 			wantLang string
-			wantVTT  bool
 		}{
-			{lang, false}, // lang diminta, SRT atau VTT
-			{"", false},   // default, SRT atau VTT
+			{lang},
+			{""},
 		}
-		// Cari VTT dulu untuk lang yang diminta, lalu SRT, lalu default
 		for _, p := range priorities {
 			// Coba VTT dulu
 			for i := range matches {
@@ -220,7 +233,54 @@ func HandleSubtitle(cfg *Config) http.HandlerFunc {
 	}
 }
 
+// serveEmbeddedSubtitle mengekstrak subtitle stream dari file video pakai ffmpeg
+// dan mengirimnya sebagai WebVTT. Hasil di-cache di disk.
+func serveEmbeddedSubtitle(w http.ResponseWriter, r *http.Request, cfg *Config, videoPath string, streamIndex int) {
+	ffmpeg := cfg.FFmpegBinary()
+	if ffmpeg == "" {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{
+			"error": "ffmpeg tidak tersedia di server. Install ffmpeg dan restart server.",
+		})
+		return
+	}
+
+	// Cek cache dulu — hindari extract berulang untuk file yang sama
+	key, err := embed.CacheKey(videoPath)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "gagal membaca info file"})
+		return
+	}
+	if cached, ok := embed.ReadCache(cfg.CacheDir(), key, streamIndex); ok {
+		w.Header().Set("Content-Type", "text/vtt; charset=utf-8")
+		w.Header().Set("Cache-Control", "private, max-age=3600")
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Write(cached)
+		return
+	}
+
+	// Extract via ffmpeg
+	data, err := embed.Extract(r.Context(), ffmpeg, videoPath, streamIndex)
+	if err != nil {
+		log.Printf("embed.Extract gagal (stream %d, %s): %v", streamIndex, videoPath, err)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{
+			"error": "gagal mengekstrak subtitle dari video",
+		})
+		return
+	}
+
+	// Simpan ke cache (silent error — tidak fatal)
+	if cacheErr := embed.WriteCache(cfg.CacheDir(), key, streamIndex, data); cacheErr != nil {
+		log.Printf("embed.WriteCache gagal: %v", cacheErr)
+	}
+
+	w.Header().Set("Content-Type", "text/vtt; charset=utf-8")
+	w.Header().Set("Cache-Control", "private, max-age=3600")
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+	w.Write(data)
+}
+
 // HandleSubtitles menangani GET /api/subtitles?path=<video-path>
+// Mengembalikan list subtitle: file eksternal (.srt/.vtt) + embedded stream dari MKV/MP4.
 func HandleSubtitles(cfg *Config) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
@@ -254,6 +314,7 @@ func HandleSubtitles(cfg *Config) http.HandlerFunc {
 		}
 		results := []subInfo{}
 
+		// 1. Scan file subtitle eksternal (.srt / .vtt)
 		for _, e := range entries {
 			if e.IsDir() {
 				continue
@@ -267,6 +328,47 @@ func HandleSubtitles(cfg *Config) http.HandlerFunc {
 				label = langLabel(lang)
 			}
 			results = append(results, subInfo{Lang: lang, Label: label})
+		}
+
+		// 2. Scan embedded subtitle stream (MKV, MP4, MOV, WebM)
+		ext := strings.ToLower(strings.TrimPrefix(filepath.Ext(info.Name()), "."))
+		if ext == "mkv" || ext == "mp4" || ext == "mov" || ext == "webm" {
+			ffprobe := cfg.FFprobeBinary()
+			if ffprobe != "" {
+				tracks, probeErr := embed.Probe(r.Context(), ffprobe, target)
+				if probeErr != nil {
+					// Error ffprobe tidak fatal — log saja, lanjut dengan hasil eksternal
+					log.Printf("embed.Probe gagal (%s): %v", info.Name(), probeErr)
+				} else {
+					for _, t := range tracks {
+						// Normalisasi lang code (mis. "ind" → "id", "eng" → "en")
+						lang := subtitle.LangAlias(t.Lang)
+						if lang == "" {
+							lang = t.Lang // pakai apa adanya kalau tidak dikenal
+						}
+						// Coba normalisasi dari Title kalau lang masih kosong
+						if lang == "" && t.Title != "" {
+							lang = subtitle.LangAlias(t.Title)
+						}
+
+						// Buat label yang informatif
+						label := "Embedded"
+						if t.Title != "" {
+							label = t.Title
+						} else if lang != "" {
+							label = langLabel(lang)
+						}
+						label += " (Embedded)"
+
+						// Pakai prefix "embed:<index>" sebagai lang key
+						// Frontend kirim kembali nilai ini ke /api/subtitle?lang=embed:N
+						results = append(results, subInfo{
+							Lang:  fmt.Sprintf("embed:%d", t.Index),
+							Label: label,
+						})
+					}
+				}
+			}
 		}
 
 		writeJSON(w, http.StatusOK, results)

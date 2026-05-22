@@ -3,8 +3,8 @@ package server
 import (
 	"encoding/json"
 	"fmt"
+	"lan-server/internal/transcode"
 	"os"
-	"os/exec"
 	"path/filepath"
 )
 
@@ -13,7 +13,7 @@ type Config struct {
 	SharedFolder string `json:"shared_folder"`
 	Port         int    `json:"port"`
 	PINEnabled   bool   `json:"pin_enabled"`
-	FFmpegPath   string `json:"ffmpeg_path"` // path ke executable ffmpeg, kosong = auto-detect dari PATH
+	FFmpegPath   string `json:"ffmpeg_path"` // path ke executable ffmpeg, kosong = auto-detect
 }
 
 // LoadConfig membaca config.json dari path yang diberikan.
@@ -44,27 +44,28 @@ func (c *Config) Validate() error {
 }
 
 // FFmpegBinary mengembalikan path ke executable ffmpeg yang aktif.
-// Kalau FFmpegPath di config kosong, cari di PATH sistem.
-// Mengembalikan "" kalau tidak ditemukan.
+//
+// Prioritas:
+//  1. ffmpeg_path di config.json (eksplisit dari user)
+//  2. transcode.FindFFmpeg() — single source of truth dengan fallback winget/choco/scoop
+//
+// Dengan ini, deteksi ffmpeg konsisten antara /api/transcode dan /api/subtitles.
 func (c *Config) FFmpegBinary() string {
 	if c.FFmpegPath != "" {
 		return c.FFmpegPath
 	}
-	p, err := exec.LookPath("ffmpeg")
-	if err != nil {
-		return ""
-	}
-	return p
+	return transcode.FindFFmpeg()
 }
 
 // FFprobeBinary mengembalikan path ke executable ffprobe.
-// Dicari di folder yang sama dengan ffmpeg dulu, lalu fallback ke PATH.
-// Mengembalikan "" kalau tidak ditemukan.
+//
+// Prioritas:
+//  1. Folder yang sama dengan ffmpeg_path di config (kalau diset manual)
+//  2. transcode.FindFFprobe() — single source of truth dengan fallback winget/choco/scoop
 func (c *Config) FFprobeBinary() string {
-	ffmpeg := c.FFmpegBinary()
-	if ffmpeg != "" {
-		// ffprobe biasanya satu folder dengan ffmpeg
-		dir := filepath.Dir(ffmpeg)
+	if c.FFmpegPath != "" {
+		// Kalau user set ffmpeg_path manual, cari ffprobe di folder yang sama
+		dir := filepath.Dir(c.FFmpegPath)
 		for _, name := range []string{"ffprobe", "ffprobe.exe"} {
 			candidate := filepath.Join(dir, name)
 			if _, err := os.Stat(candidate); err == nil {
@@ -72,12 +73,7 @@ func (c *Config) FFprobeBinary() string {
 			}
 		}
 	}
-	// Fallback: cari di PATH
-	p, err := exec.LookPath("ffprobe")
-	if err != nil {
-		return ""
-	}
-	return p
+	return transcode.FindFFprobe()
 }
 
 // CacheDir mengembalikan path direktori cache untuk embedded subtitle.

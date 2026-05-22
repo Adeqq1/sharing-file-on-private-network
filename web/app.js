@@ -399,7 +399,7 @@ function openPlayer(item) {
       if (playerError) playerError.classList.remove('hidden');
     }, { once: true, signal: sig });
 
-    playerAudio.src = url;
+    playerAudio.src = streamURL;
     playerAudio.load();
     playerAudio.play().catch(() => {});
   }
@@ -415,43 +415,6 @@ function pickStreamURL(item) {
     return '/api/transcode?path=' + encodeURIComponent(filePathOf(item));
   }
   return '/api/stream?path=' + encodeURIComponent(filePathOf(item));
-}
-
-// Buka player untuk format yang browser TIDAK support (MKV, AVI, FLAC, dll)
-// Langsung tampilkan error state + tombol download
-function openPlayerUnsupported(item) {
-  state.currentPlayerItem = item;
-
-  const playerVideo     = $('player-video');
-  const playerAudio     = $('player-audio');
-  const playerAudioWrap = $('player-audio-wrap');
-  const playerSpinner   = $('player-spinner');
-  const playerError     = $('player-error');
-  const playerErrorMsg  = $('player-error-msg');
-
-  playerVideo.pause();
-  playerAudio.pause();
-  playerVideo.src = '';
-  playerAudio.src = '';
-  playerAudioWrap.classList.add('hidden');
-  playerSpinner.classList.add('hidden');
-
-  if (typeof resetCplayer === 'function') resetCplayer();
-
-  playerTitle.textContent = item.name;
-  playerOverlay.classList.remove('hidden');
-  document.body.style.overflow = 'hidden';
-
-  // Tampilkan error state langsung
-  const ext = (item.ext || '').toUpperCase();
-  if (playerErrorMsg) {
-    playerErrorMsg.textContent = 'Format ' + ext + ' tidak didukung browser ini.';
-  }
-  if (playerError) playerError.classList.remove('hidden');
-
-  if (!history.state || !history.state.player) {
-    history.pushState({ player: true }, '');
-  }
 }
 
 function closePlayer() {

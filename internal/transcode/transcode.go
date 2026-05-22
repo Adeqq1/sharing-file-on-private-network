@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -47,13 +48,18 @@ func detect() {
 }
 
 // lookupBinary mencari binary di PATH, lalu fallback ke lokasi umum winget/choco/scoop.
+// Fallback path hanya dicek di Windows.
 func lookupBinary(name string) string {
-	// 1. Cari di PATH standar
+	// 1. Cari di PATH standar (semua OS)
 	if p, err := exec.LookPath(name); err == nil {
 		return p
 	}
 
-	// 2. Fallback: lokasi umum instalasi ffmpeg di Windows
+	// 2. Fallback: lokasi umum instalasi ffmpeg di Windows saja
+	if runtime.GOOS != "windows" {
+		return ""
+	}
+
 	homeDir, _ := os.UserHomeDir()
 	candidates := []string{
 		// winget (Gyan.FFmpeg) — cari semua versi
@@ -122,6 +128,32 @@ func Available() bool { return ffmpegPath != "" && ffprobePath != "" }
 // Version mengembalikan string versi ffmpeg (mis. "6.1.1"), atau "" jika tidak ada.
 func Version() string { return ffmpegVer }
 
+// ── Semaphore untuk limit concurrent transcode ───────────────────────────────
+
+// maxConcurrentTranscodes adalah batas maksimum proses ffmpeg transcode yang
+// berjalan bersamaan. Default 2 — cukup untuk LAN rumah tanpa overload CPU.
+// Remux (copy codec) tidak dihitung karena hampir tidak pakai CPU.
+const maxConcurrentTranscodes = 2
+
+// transcodeSem adalah semaphore berbasis channel buffered.
+var transcodeSem = make(chan struct{}, maxConcurrentTranscodes)
+
+// acquireTranscode mengambil slot semaphore. Blokir sampai ada slot kosong
+// atau context di-cancel. Mengembalikan false kalau context di-cancel.
+func acquireTranscode(ctx context.Context) bool {
+	select {
+	case transcodeSem <- struct{}{}:
+		return true
+	case <-ctx.Done():
+		return false
+	}
+}
+
+// releaseTranscode melepas slot semaphore.
+func releaseTranscode() {
+	<-transcodeSem
+}
+
 // ── Streaming transcode/remux ─────────────────────────────────────────────────
 
 // Stream menjalankan ffmpeg dengan argumen yang sesuai berdasarkan hasil probe,
@@ -134,8 +166,20 @@ func Version() string { return ffmpegVer }
 //
 // Context cancel akan kill proses ffmpeg — penting agar tidak ada zombie process
 // saat user menutup player.
+//
+// Untuk full/audio transcode, semaphore dipakai agar max 2 proses berjalan
+// bersamaan. Remux tidak dibatasi karena hampir tidak pakai CPU.
 func Stream(ctx context.Context, absPath string, probe *ProbeResult, out io.Writer) error {
 	args := buildFFmpegArgs(absPath, probe)
+	strategy := strategyName(probe)
+
+	// Batasi concurrent transcode (bukan remux) via semaphore
+	if strategy != "remux" {
+		if !acquireTranscode(ctx) {
+			return ctx.Err()
+		}
+		defer releaseTranscode()
+	}
 
 	cmd := exec.CommandContext(ctx, ffmpegPath, args...)
 
@@ -144,7 +188,7 @@ func Stream(ctx context.Context, absPath string, probe *ProbeResult, out io.Writ
 	cmd.Stderr = &limitedWriter{w: &stderrBuf, limit: 10 * 1024}
 	cmd.Stdout = out
 
-	log.Printf("[transcode] start: %s (%s)", absPath, strategyName(probe))
+	log.Printf("[transcode] start: %s (%s)", absPath, strategy)
 
 	err := cmd.Run()
 
@@ -209,7 +253,12 @@ func buildFFmpegArgs(absPath string, probe *ProbeResult) []string {
 		"pipe:1",
 	}
 
-	args := append(base, codecArgs...)
+	// Pre-allocate slice dengan ukuran tepat untuk menghindari aliasing.
+	// append(base, ...) bisa modify backing array base kalau cap > len.
+	total := len(base) + len(codecArgs) + len(outputArgs)
+	args := make([]string, 0, total)
+	args = append(args, base...)
+	args = append(args, codecArgs...)
 	args = append(args, outputArgs...)
 	return args
 }

@@ -15,28 +15,26 @@ import (
 	"time"
 )
 
-// cleanSubtitleCache menghapus file cache subtitle yang lebih lama dari 7 hari.
-func cleanSubtitleCache(dir string) {
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		return
-	}
-	cutoff := time.Now().Add(-7 * 24 * time.Hour)
-	for _, e := range entries {
-		if e.IsDir() {
-			continue
+// cleanSubtitleCache menghapus file cache subtitle yang lebih lama dari maxAge.
+// Scan rekursif karena embed.WriteCache menyimpan di struktur nested:
+// <cacheRoot>/subtitles/<key>/<streamIndex>.vtt
+func cleanSubtitleCache(cacheRoot string, maxAge time.Duration) {
+	cutoff := time.Now().Add(-maxAge)
+	_ = filepath.WalkDir(cacheRoot, func(path string, d os.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return nil
 		}
-		info, err := e.Info()
+		info, err := d.Info()
 		if err != nil {
-			continue
+			return nil
 		}
 		if info.ModTime().Before(cutoff) {
-			path := filepath.Join(dir, e.Name())
-			if err := os.Remove(path); err == nil {
-				log.Printf("cache: hapus subtitle lama: %s", e.Name())
+			if removeErr := os.Remove(path); removeErr == nil {
+				log.Printf("cache: hapus subtitle lama: %s", filepath.Base(path))
 			}
 		}
-	}
+		return nil
+	})
 }
 
 func main() {
@@ -54,13 +52,13 @@ func main() {
 		fmt.Printf("INFO: Folder '%s' dibuat otomatis.\n", cfg.SharedFolder)
 	}
 
-	// Cek ketersediaan ffmpeg untuk fitur embedded subtitle
-	if cfg.FFmpegBinary() == "" {
-		log.Println("WARNING: ffmpeg tidak ditemukan. Embedded subtitle dari MKV/MP4 tidak akan tersedia.")
-		log.Println("         Install ffmpeg: winget install --id=Gyan.FFmpeg -e")
-		log.Println("         Atau set 'ffmpeg_path' di config.json ke path ffmpeg yang sudah diinstall.")
-	} else {
-		log.Printf("INFO: ffmpeg ditemukan di: %s", cfg.FFmpegBinary())
+	// Cek ketersediaan ffmpeg — satu log saja, pakai transcode package sebagai sumber kebenaran.
+	// Tidak perlu log terpisah dari cfg.FFmpegBinary() karena transcode.Available() sudah
+	// ditampilkan di banner startup di bawah.
+	if !transcode.Available() && cfg.FFmpegPath == "" {
+		log.Println("WARNING: ffmpeg tidak ditemukan. Format MKV/AVI/WMV/FLV tidak bisa diputar.")
+		log.Println("         Install: winget install --id=Gyan.FFmpeg -e")
+		log.Println("         Atau set 'ffmpeg_path' di config.json.")
 	}
 
 	// Setup PIN jika diaktifkan
@@ -99,19 +97,21 @@ func main() {
 	fmt.Println("Tekan Ctrl+C untuk menghentikan server.")
 	fmt.Println()
 
-	// Buat folder cache untuk subtitle embedded
-	cacheDir := filepath.Join("cache", "embedded_subtitle")
+	// Buat folder cache untuk subtitle embedded.
+	// Path harus sama dengan yang dipakai embed.WriteCache: cfg.CacheDir()/subtitles/...
+	cacheDir := cfg.CacheDir()
 	if err := os.MkdirAll(cacheDir, 0755); err != nil {
 		log.Printf("WARN: gagal membuat folder cache subtitle: %v", err)
 	}
 
-	// Jalankan janitor cache subtitle: hapus file > 7 hari
+	// Jalankan janitor cache subtitle: hapus file > 7 hari, scan rekursif
 	go func() {
-		cleanSubtitleCache(cacheDir)
+		const maxAge = 7 * 24 * time.Hour
+		cleanSubtitleCache(cacheDir, maxAge)
 		ticker := time.NewTicker(24 * time.Hour)
 		defer ticker.Stop()
 		for range ticker.C {
-			cleanSubtitleCache(cacheDir)
+			cleanSubtitleCache(cacheDir, maxAge)
 		}
 	}()
 

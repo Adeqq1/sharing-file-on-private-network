@@ -10,8 +10,10 @@ import (
 	"lan-server/internal/live"
 	"lan-server/internal/media"
 	"lan-server/internal/subtitle"
+	"lan-server/internal/transcode"
 	"log"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -309,10 +311,12 @@ func HandleSubtitles(cfg *Config) http.HandlerFunc {
 		}
 
 		type subInfo struct {
-			Lang  string `json:"lang"`
-			Label string `json:"label"`
+			Lang   string `json:"lang"`
+			Label  string `json:"label"`
+			Source string `json:"source"`          // "external" atau "embedded"
+			Track  int    `json:"track,omitempty"` // index stream (hanya untuk embedded)
 		}
-		results := []subInfo{}
+		var results []subInfo
 
 		// 1. Scan file subtitle eksternal (.srt / .vtt)
 		for _, e := range entries {
@@ -388,6 +392,111 @@ func langLabel(code string) string {
 		return l
 	}
 	return strings.ToUpper(code)
+}
+
+// ── Handler baru: Probe, Transcode, Embedded Subtitle ────────────────────────
+
+// HandleProbe menangani GET /api/probe?path=<relative>
+// Mengembalikan info codec & stream dari file via ffprobe.
+// Endpoint ini opsional untuk frontend — dipakai sebagai hint saja.
+func HandleProbe(cfg *Config) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+			return
+		}
+		if !transcode.Available() {
+			writeJSON(w, http.StatusServiceUnavailable, map[string]string{
+				"error": "ffmpeg tidak terinstall di server",
+			})
+			return
+		}
+		target, ok := resolveSafeOrRespond(w, cfg.SharedFolder, r.URL.Query().Get("path"))
+		if !ok {
+			return
+		}
+		info, err := os.Stat(target)
+		if err != nil || info.IsDir() {
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": "file tidak ditemukan"})
+			return
+		}
+		result, err := transcode.Probe(target, info.ModTime())
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+			return
+		}
+		w.Header().Set("Cache-Control", "no-cache")
+		writeJSON(w, http.StatusOK, result)
+	}
+}
+
+// HandleTranscode menangani GET /api/transcode?path=<relative>
+// Stream video sebagai fragmented MP4 via ffmpeg.
+// Otomatis pilih strategi: remux / audio-transcode / full-transcode.
+// Kalau file tidak butuh transcode → redirect 302 ke /api/stream.
+func HandleTranscode(cfg *Config) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet && r.Method != http.MethodHead {
+			writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+			return
+		}
+		if !transcode.Available() {
+			writeJSON(w, http.StatusServiceUnavailable, map[string]string{
+				"error": "ffmpeg tidak terinstall di server. Install ffmpeg untuk memutar format ini.",
+			})
+			return
+		}
+
+		relPath := r.URL.Query().Get("path")
+		target, ok := resolveSafeOrRespond(w, cfg.SharedFolder, relPath)
+		if !ok {
+			return
+		}
+
+		info, err := os.Stat(target)
+		if err != nil {
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": "file tidak ditemukan"})
+			return
+		}
+		if info.IsDir() {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "tidak bisa transcode folder"})
+			return
+		}
+		if info.Size() == 0 {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "file kosong"})
+			return
+		}
+
+		probe, err := transcode.Probe(target, info.ModTime())
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{
+				"error": "gagal membaca info file: " + err.Error(),
+			})
+			return
+		}
+
+		// Kalau tidak butuh transcode → redirect ke /api/stream yang lebih efisien
+		if !transcode.NeedsTranscode(probe) {
+			http.Redirect(w, r, "/api/stream?path="+url.QueryEscape(relPath), http.StatusFound)
+			return
+		}
+
+		// Set header sebelum ffmpeg dijalankan — setelah body mulai dikirim, header tidak bisa diubah
+		w.Header().Set("Content-Type", "video/mp4")
+		w.Header().Set("Cache-Control", "no-store")
+		// Tidak set Content-Length karena ukuran output transcode tidak diketahui di awal
+		// TODO: Implementasi Range request / HLS untuk seek-friendly playback (follow-up issue)
+
+		if r.Method == http.MethodHead {
+			return
+		}
+
+		if err := transcode.Stream(r.Context(), target, probe, w); err != nil {
+			// Error setelah header dikirim tidak bisa dikembalikan sebagai HTTP error
+			// Cukup log — client akan melihat koneksi terputus
+			return
+		}
+	}
 }
 
 // HandleDownload menangani GET /api/download?path=<relative>

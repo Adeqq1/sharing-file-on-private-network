@@ -227,12 +227,8 @@ function renderFiles(items) {
         // Masuk folder
         loadFiles(state.currentPath ? state.currentPath + '/' + item.name : item.name);
       } else if (item.streamable) {
-        // Video/audio yang browser support → buka custom player langsung
+        // Video/audio yang bisa diputar (native atau via transcode) → buka custom player
         openPlayer(item);
-      } else if (item.native_play) {
-        // Format video/audio tapi browser tidak support (MKV, AVI, FLAC, dll)
-        // Buka player dengan error state + tombol download
-        openPlayerUnsupported(item);
       } else {
         // File biasa (PDF, ZIP, gambar, dll) → download langsung
         downloadFile(item);
@@ -290,9 +286,12 @@ const playerPip     = $('player-pip');
 let playerAbort = new AbortController();
 
 // Buka player untuk format yang browser support (MP4, WebM, MP3, dll)
+// atau format yang butuh transcode via /api/transcode (MKV, AVI, WMV, FLV, dll)
 function openPlayer(item) {
   state.currentPlayerItem = item;
-  const url = '/api/stream?path=' + encodeURIComponent(filePathOf(item));
+
+  // Pilih URL stream berdasarkan format file
+  const streamURL = pickStreamURL(item);
 
   playerAbort.abort();
   playerAbort = new AbortController();
@@ -349,9 +348,11 @@ function openPlayer(item) {
       playerSpinner.classList.add('hidden');
       const code = playerVideo.error?.code;
       const ext = (item.ext || '').toLowerCase();
+      const isTranscodeURL = streamURL.startsWith('/api/transcode');
       let msg;
-      // Pesan khusus untuk format yang mungkin tidak didukung semua browser
-      if (code === 4 && (ext === 'mkv' || ext === 'avi' || ext === 'wmv' || ext === 'flv')) {
+      if (isTranscodeURL) {
+        msg = 'Format ini tidak bisa diputar di browser. Server kamu mungkin belum punya ffmpeg, atau file rusak.';
+      } else if (code === 4 && (ext === 'mkv' || ext === 'avi' || ext === 'wmv' || ext === 'flv')) {
         msg = `Format ${ext.toUpperCase()} tidak didukung browser ini. Coba Chrome Android atau download ke VLC/MX Player.`;
       } else {
         switch (code) {
@@ -366,7 +367,13 @@ function openPlayer(item) {
       if (playerError) playerError.classList.remove('hidden');
     }, { once: true, signal: sig });
 
-    playerVideo.src = url;
+    // Tampilkan toast informasi transcoding (sekali per session)
+    if (item.needs_transcode && !sessionStorage.getItem('cp_transcodeHint')) {
+      sessionStorage.setItem('cp_transcodeHint', '1');
+      setTimeout(() => showToast('🎬 Konversi format on-the-fly... CPU laptop akan naik sebentar.'), 500);
+    }
+
+    playerVideo.src = streamURL;
     playerVideo.load();
 
   } else if (item.streamable === 'audio') {
@@ -396,6 +403,18 @@ function openPlayer(item) {
     playerAudio.load();
     playerAudio.play().catch(() => {});
   }
+}
+
+// ===== Pemilihan URL Stream =====
+
+// pickStreamURL memilih endpoint stream yang tepat berdasarkan format file.
+// Format yang kemungkinan butuh transcode (mkv, avi, wmv, flv, ts) → /api/transcode
+// Format browser-native (mp4, webm, mp3, dll) → /api/stream
+function pickStreamURL(item) {
+  if (item.needs_transcode) {
+    return '/api/transcode?path=' + encodeURIComponent(filePathOf(item));
+  }
+  return '/api/stream?path=' + encodeURIComponent(filePathOf(item));
 }
 
 // Buka player untuk format yang browser TIDAK support (MKV, AVI, FLAC, dll)

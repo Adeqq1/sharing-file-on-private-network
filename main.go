@@ -5,13 +5,39 @@ import (
 	"fmt"
 	"lan-server/internal/netinfo"
 	"lan-server/internal/server"
+	"lan-server/internal/transcode"
 	"log"
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
 )
+
+// cleanSubtitleCache menghapus file cache subtitle yang lebih lama dari 7 hari.
+func cleanSubtitleCache(dir string) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return
+	}
+	cutoff := time.Now().Add(-7 * 24 * time.Hour)
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		info, err := e.Info()
+		if err != nil {
+			continue
+		}
+		if info.ModTime().Before(cutoff) {
+			path := filepath.Join(dir, e.Name())
+			if err := os.Remove(path); err == nil {
+				log.Printf("cache: hapus subtitle lama: %s", e.Name())
+			}
+		}
+	}
+}
 
 func main() {
 	// Baca dan validasi config.json
@@ -62,10 +88,32 @@ func main() {
 	fmt.Printf("│  HP/Tablet: http://%s:%d     │\n", lanIP, port)
 	fmt.Println("├─────────────────────────────────────────┤")
 	fmt.Printf("│  Shared  : %s\n", cfg.SharedFolder)
+	if transcode.Available() {
+		fmt.Printf("│  Transcode: ENABLED  (ffmpeg %s)\n", transcode.Version())
+	} else {
+		fmt.Println("│  Transcode: DISABLED (ffmpeg tidak ditemukan di PATH)")
+		fmt.Println("│             Install ffmpeg untuk memutar MKV/AVI/WMV/FLV")
+	}
 	fmt.Println("└─────────────────────────────────────────┘")
 	fmt.Println()
 	fmt.Println("Tekan Ctrl+C untuk menghentikan server.")
 	fmt.Println()
+
+	// Buat folder cache untuk subtitle embedded
+	cacheDir := filepath.Join("cache", "embedded_subtitle")
+	if err := os.MkdirAll(cacheDir, 0755); err != nil {
+		log.Printf("WARN: gagal membuat folder cache subtitle: %v", err)
+	}
+
+	// Jalankan janitor cache subtitle: hapus file > 7 hari
+	go func() {
+		cleanSubtitleCache(cacheDir)
+		ticker := time.NewTicker(24 * time.Hour)
+		defer ticker.Stop()
+		for range ticker.C {
+			cleanSubtitleCache(cacheDir)
+		}
+	}()
 
 	// Buat server dengan timeout
 	srv := server.NewServer(cfg)

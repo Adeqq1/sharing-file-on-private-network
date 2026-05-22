@@ -12,7 +12,8 @@ const cplayer = {
     speed: 1,
     ccEnabled: false,
     currentLang: '',         // kode bahasa subtitle yang aktif
-    availableSubs: [],       // daftar subtitle dari /api/subtitles
+    currentSubIdx: -1,       // index entry subtitle yang aktif di availableSubs
+    availableSubs: [],       // daftar subtitle dari /api/subtitles (termasuk embedded)
     lastTap: 0,
     lastTapX: 0,
     touchStart: null,
@@ -367,22 +368,29 @@ function showSubSubmenu() {
   cplayer.dom.settingsMenu.innerHTML = `
     <button class="cplayer-popup-item popup-back" data-action="back">‹ Subtitle</button>
     <button class="cplayer-popup-item ${!cplayer.state.ccEnabled ? 'active' : ''}" data-lang="__off">Off</button>
-    ${subs.map(s => `
-      <button class="cplayer-popup-item ${cplayer.state.ccEnabled && cplayer.state.currentLang === s.lang ? 'active' : ''}"
-              data-lang="${s.lang}">
+    ${subs.map((s, idx) => `
+      <button class="cplayer-popup-item ${cplayer.state.ccEnabled && cplayer.state.currentLang === s.lang && cplayer.state.currentSubIdx === idx ? 'active' : ''}"
+              data-sub-idx="${idx}">
         ${s.label}
       </button>
     `).join('')}
   `;
-  cplayer.dom.settingsMenu.querySelectorAll('[data-lang]').forEach(btn => {
+  cplayer.dom.settingsMenu.querySelectorAll('[data-sub-idx]').forEach(btn => {
     btn.addEventListener('click', (e) => {
       e.stopPropagation();
-      const lang = btn.dataset.lang;
-      if (lang === '__off') {
-        toggleCC(false);
-      } else {
-        switchSubtitle(lang);
+      const idx = parseInt(btn.dataset.subIdx);
+      const entry = cplayer.state.availableSubs[idx];
+      if (entry) {
+        cplayer.state.currentSubIdx = idx;
+        switchSubtitleEntry(entry);
       }
+      closeAllPopups();
+    });
+  });
+  cplayer.dom.settingsMenu.querySelectorAll('[data-lang="__off"]').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      toggleCC(false);
       closeAllPopups();
     });
   });
@@ -562,49 +570,76 @@ async function setupSubtitle(item, filePathFn) {
   cplayer.state.availableSubs = [];
   cplayer.state.currentLang = '';
 
-  if (!item.has_subtitle || item.streamable !== 'video') {
+  if (item.streamable !== 'video') {
     cplayer.state.ccEnabled = false;
     return;
   }
 
-  // Fetch list subtitle dari backend
+  // Fetch list subtitle dari backend (gabungan external + embedded)
   try {
     const path = filePathFn(item);
     const res = await fetch('/api/subtitles?path=' + encodeURIComponent(path));
     const subs = await res.json();
     if (Array.isArray(subs) && subs.length > 0) {
+      // Simpan semua field termasuk source dan track untuk embedded
       cplayer.state.availableSubs = subs;
-      // Pilih default: prioritaskan 'id', lalu 'en', lalu yang pertama
-      const preferred = subs.find(s => s.lang === 'id') ||
-                        subs.find(s => s.lang === 'en') ||
-                        subs[0];
-      switchSubtitle(preferred.lang);
+      // Pilih default: prioritaskan 'id' external, lalu 'en', lalu yang pertama
+      const preferred =
+        subs.find(s => s.lang === 'id' && s.source === 'external') ||
+        subs.find(s => s.lang === 'en' && s.source === 'external') ||
+        subs.find(s => s.lang === 'id') ||
+        subs.find(s => s.lang === 'en') ||
+        subs[0];
+      switchSubtitleEntry(preferred);
     }
   } catch {
     // Fallback ke single subtitle (lama)
-    cplayer.state.availableSubs = [{ lang: '', label: 'Default' }];
-    switchSubtitle('');
+    cplayer.state.availableSubs = [{ lang: '', label: 'Default', source: 'external' }];
+    switchSubtitleEntry(cplayer.state.availableSubs[0]);
   }
 }
 
+// switchSubtitle dipanggil dari menu CC dengan lang string (backward compat)
 function switchSubtitle(lang) {
+  const entry = cplayer.state.availableSubs.find(s => s.lang === lang);
+  if (entry) {
+    switchSubtitleEntry(entry);
+  } else {
+    // Fallback: buat entry minimal
+    switchSubtitleEntry({ lang, label: lang || 'Default', source: 'external' });
+  }
+}
+
+// switchSubtitleEntry menangani pemilihan subtitle berdasarkan entry lengkap
+// (termasuk field source dan track untuk embedded subtitle).
+function switchSubtitleEntry(entry) {
   if (!cplayer.video || !cplayer.state.currentItem) return;
 
   // Hapus track lama (fix poin #6)
   cplayer.video.querySelectorAll('track').forEach(t => t.remove());
 
   const path = cplayer.state.currentPath;
-  const url = '/api/subtitle?path=' + encodeURIComponent(path) +
-              (lang ? '&lang=' + encodeURIComponent(lang) : '');
+  let url;
+
+  if (entry.source === 'embedded' && entry.track !== undefined) {
+    // Subtitle embedded: pakai endpoint khusus dengan track index
+    url = '/api/embedded-subtitle?path=' + encodeURIComponent(path) +
+          '&track=' + encodeURIComponent(entry.track);
+  } else {
+    // Subtitle eksternal: pakai endpoint lama
+    url = '/api/subtitle?path=' + encodeURIComponent(path) +
+          (entry.lang ? '&lang=' + encodeURIComponent(entry.lang) : '');
+  }
+
   const track = document.createElement('track');
   track.kind = 'subtitles';
-  track.label = cplayer.state.availableSubs.find(s => s.lang === lang)?.label || 'Subtitle';
-  track.srclang = lang || 'und';
+  track.label = entry.label || 'Subtitle';
+  track.srclang = entry.lang || 'und';
   track.default = true;
   track.src = url;
   cplayer.video.appendChild(track);
 
-  cplayer.state.currentLang = lang;
+  cplayer.state.currentLang = entry.lang || '';
   cplayer.state.ccEnabled = true;
 
   // Update mode setelah track loaded
@@ -1070,6 +1105,7 @@ function resetCplayer() {
   cplayer.state.queueItems = [];
   cplayer.state.queueIndex = -1;
   cplayer.state.fsTransition = false; // reset flag transisi fullscreen
+  cplayer.state.currentSubIdx = -1;  // reset index subtitle aktif
 
   // Reset CSS rotate kalau masih aktif saat player ditutup
   if (cplayer.state.cssRotated) {

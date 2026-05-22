@@ -324,17 +324,20 @@ function openPlayer(item) {
   if (typeof setPlayerItem === 'function') setPlayerItem(item, filePathOf(item));
   if (typeof setQueue === 'function') setQueue(state.allItems, item);
 
-  // Untuk video transcode, fetch durasi penuh dari /api/probe agar progress bar
-  // menampilkan total durasi (bukan sisa dari titik mulai setelah seek).
+  // Untuk video transcode, set flag isTranscoded segera (synchronous) agar
+  // effectiveDuration() sudah tahu mode transcode sebelum loadedmetadata fire.
+  // Durasi total (totalDuration) diisi setelah probe balik — kalau probe lambat,
+  // effectiveDuration() fallback ke video.duration native sampai probe selesai.
   if (item.needs_transcode && item.streamable === 'video') {
+    if (typeof setTotalDuration === 'function') setTotalDuration(0, true); // flag dulu
     fetch('/api/probe?path=' + encodeURIComponent(filePathOf(item)))
       .then(r => r.ok ? r.json() : null)
       .then(probe => {
         if (probe && probe.duration && typeof setTotalDuration === 'function') {
-          setTotalDuration(probe.duration, true /*isTranscoded*/);
+          setTotalDuration(probe.duration, true); // update dengan durasi sesungguhnya
         }
       })
-      .catch(() => { /* probe gagal — fallback ke video.duration native */ });
+      .catch(() => { /* probe gagal — effectiveDuration() fallback ke video.duration */ });
   } else {
     if (typeof setTotalDuration === 'function') setTotalDuration(0, false);
   }

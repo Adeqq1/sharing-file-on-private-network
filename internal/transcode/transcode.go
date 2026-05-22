@@ -193,7 +193,11 @@ func Stream(ctx context.Context, absPath string, probe *ProbeResult, startSec fl
 	cmd.Stderr = &limitedWriter{w: &stderrBuf, limit: 10 * 1024}
 	cmd.Stdout = out
 
-	log.Printf("[transcode] start: %s (%s, t=%.1fs)", absPath, strategy, startSec)
+	if startSec > 0 {
+		log.Printf("[transcode] start: %s (%s, t=%.1fs)", absPath, strategy, startSec)
+	} else {
+		log.Printf("[transcode] start: %s (%s)", absPath, strategy)
+	}
 
 	err := cmd.Run()
 
@@ -227,7 +231,9 @@ func buildFFmpegArgs(absPath string, probe *ProbeResult, startSec float64) []str
 	// Input seek: pakai -ss SEBELUM -i (fast seek, lompat ke keyframe terdekat).
 	// Hanya tambahkan kalau startSec > 0 untuk hindari overhead di playback awal.
 	if startSec > 0 {
-		base = append(base, "-ss", strconv.FormatFloat(startSec, 'f', 3, 64))
+		// Precision 1 desimal cukup — frontend sudah Math.floor, dan ffmpeg
+		// lompat ke keyframe terdekat (resolusi GOP 2-10 detik).
+		base = append(base, "-ss", strconv.FormatFloat(startSec, 'f', 1, 64))
 	}
 
 	base = append(base,

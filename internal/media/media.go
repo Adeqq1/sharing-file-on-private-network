@@ -38,11 +38,13 @@ var formats = map[string]formatInfo{
 	"ogg": {KindAudio, "audio/ogg", true, true},
 	"wav": {KindAudio, "audio/wav", true, true},
 
-	// ── Native-only (browser tidak bisa, tapi app HP bisa) ──
+	// ── Native-only (browser tidak bisa native, tapi bisa via transcode ffmpeg) ──
 	// Video
 	// MKV: Chrome/Firefox support H.264+AAC di dalam container MKV.
-	// Browser yang tidak support akan emit error → player tampilkan tombol download.
+	// Codec exotic (HEVC, AC3, dll) perlu transcode via /api/transcode.
 	"mkv": {KindVideo, "video/x-matroska", true, true},
+	// AVI/WMV/FLV/TS: selalu perlu transcode, tapi tetap di-mark KindVideo
+	// agar frontend bisa buka di cplayer (dengan fallback ke /api/transcode).
 	"avi": {KindVideo, "video/x-msvideo", false, true},
 	"wmv": {KindVideo, "video/x-ms-wmv", false, true},
 	"flv": {KindVideo, "video/x-flv", false, true},
@@ -81,4 +83,15 @@ func IsNativePlayable(ext string) bool {
 // Input di-lowercase otomatis. Mengembalikan string kosong jika tidak dikenal.
 func MIMEOf(ext string) string {
 	return formats[strings.ToLower(ext)].MIME
+}
+
+// NeedsTranscodeHint mengembalikan true untuk format video yang kemungkinan besar
+// memerlukan transcode via ffmpeg sebelum bisa diputar di browser.
+// Format ini tetap bisa dibuka di cplayer, tapi frontend harus pakai /api/transcode.
+func NeedsTranscodeHint(ext string) bool {
+	switch strings.ToLower(ext) {
+	case "mkv", "avi", "wmv", "flv", "ts":
+		return true
+	}
+	return false
 }

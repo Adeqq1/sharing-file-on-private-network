@@ -20,3 +20,7 @@ Thumbs.db
 
 # Config lokal (machine-specific) — gunakan config.example.json sebagai template
 config.json
+
+# Cache subtitle embedded dan file temporary
+cache/
+*.tmp

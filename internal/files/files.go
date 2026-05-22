@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"lan-server/internal/media"
+	"lan-server/internal/subtitle"
 	"os"
 	"path/filepath"
 	"strings"
@@ -15,14 +16,15 @@ var ErrPathNotAllowed = errors.New("path tidak diizinkan")
 
 // Item merepresentasikan satu entri file atau folder.
 type Item struct {
-	Name        string    `json:"name"`
-	IsDir       bool      `json:"is_dir"`
-	Size        int64     `json:"size"`
-	ModTime     time.Time `json:"mod_time"`
-	Ext         string    `json:"ext"`
-	Streamable  string    `json:"streamable"`   // "video"/"audio" untuk browser HTML5, "" jika tidak bisa
-	NativePlay  bool      `json:"native_play"`  // true jika bisa di-stream ke app native HP (VLC, MX Player, dll)
-	HasSubtitle bool      `json:"has_subtitle"` // true jika ada file .srt/.vtt dengan basename yang sama
+	Name           string    `json:"name"`
+	IsDir          bool      `json:"is_dir"`
+	Size           int64     `json:"size"`
+	ModTime        time.Time `json:"mod_time"`
+	Ext            string    `json:"ext"`
+	Streamable     string    `json:"streamable"`      // "video"/"audio" untuk semua format yang bisa diputar (native atau via transcode)
+	NativePlay     bool      `json:"native_play"`     // true jika bisa di-stream ke app native HP (VLC, MX Player, dll)
+	HasSubtitle    bool      `json:"has_subtitle"`    // true jika ada file .srt/.vtt dengan basename yang sama
+	NeedsTranscode bool      `json:"needs_transcode"` // true jika format kemungkinan butuh transcode via ffmpeg
 }
 
 // ListResult adalah response dari listing folder.
@@ -90,38 +92,48 @@ func List(sharedRoot, relPath string) (*ListResult, error) {
 		if !e.IsDir() {
 			ext = strings.ToLower(strings.TrimPrefix(filepath.Ext(e.Name()), "."))
 		}
-		// Cek subtitle untuk file video
+		// Cek subtitle untuk file video — pakai MatchSubtitleFile agar konsisten
+		// dengan handler API (support pola ., _, -, case-insensitive).
 		hasSubtitle := false
-		if media.KindForBrowser(ext) == media.KindVideo {
+		videoKind := media.KindOf(ext) // cek semua format video, termasuk native-only
+		if videoKind == media.KindVideo {
 			base := strings.TrimSuffix(e.Name(), filepath.Ext(e.Name()))
-			// Cari file subtitle: <base>.{srt,vtt} atau <base>.{lang}.{srt,vtt}
-			// Pakai globbing manual via ReadDir lagi terlalu mahal — pakai prefix match
 			for _, sib := range entries {
 				if sib.IsDir() {
 					continue
 				}
-				sn := sib.Name()
-				sext := strings.ToLower(filepath.Ext(sn))
-				if sext != ".srt" && sext != ".vtt" {
-					continue
-				}
-				stem := strings.TrimSuffix(sn, sext)
-				if stem == base || strings.HasPrefix(stem, base+".") {
+				if _, ok := subtitle.MatchSubtitleFile(base, sib.Name()); ok {
 					hasSubtitle = true
 					break
 				}
 			}
+			// MKV/MP4/MOV/WebM kemungkinan besar punya embedded subtitle.
+			// Set true secara defensif agar badge subtitle muncul di file list.
+			// Verifikasi sesungguhnya dilakukan saat user buka video (via ffprobe).
+			if !hasSubtitle && (ext == "mkv" || ext == "mp4" || ext == "mov" || ext == "webm") {
+				hasSubtitle = true
+			}
+		}
+
+		// Tentukan streamable:
+		// - Format browser-native → pakai KindForBrowser (existing)
+		// - Format yang butuh transcode (avi, wmv, flv, ts) → tetap "video"
+		//   agar frontend bisa buka di cplayer via /api/transcode
+		streamable := string(media.KindForBrowser(ext))
+		if streamable == "" && media.KindOf(ext) == media.KindVideo && media.IsNativePlayable(ext) {
+			streamable = string(media.KindVideo)
 		}
 
 		items = append(items, Item{
-			Name:        e.Name(),
-			IsDir:       e.IsDir(),
-			Size:        info.Size(),
-			ModTime:     info.ModTime(),
-			Ext:         ext,
-			Streamable:  string(media.KindForBrowser(ext)), // hanya browser-friendly
-			NativePlay:  media.IsNativePlayable(ext),       // termasuk MKV/AVI/FLAC
-			HasSubtitle: hasSubtitle,
+			Name:           e.Name(),
+			IsDir:          e.IsDir(),
+			Size:           info.Size(),
+			ModTime:        info.ModTime(),
+			Ext:            ext,
+			Streamable:     streamable,
+			NativePlay:     media.IsNativePlayable(ext),
+			HasSubtitle:    hasSubtitle,
+			NeedsTranscode: media.NeedsTranscodeHint(ext),
 		})
 	}
 

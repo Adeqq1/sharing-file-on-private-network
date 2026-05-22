@@ -19,6 +19,11 @@ func init() {
 	mime.AddExtensionType(".svg", "image/svg+xml")
 	mime.AddExtensionType(".json", "application/json; charset=utf-8")
 	mime.AddExtensionType(".vtt", "text/vtt; charset=utf-8")
+	mime.AddExtensionType(".mkv", "video/x-matroska")
+	mime.AddExtensionType(".avi", "video/x-msvideo")
+	mime.AddExtensionType(".wmv", "video/x-ms-wmv")
+	mime.AddExtensionType(".flv", "video/x-flv")
+	mime.AddExtensionType(".ts", "video/mp2t")
 }
 
 // New membuat http.Handler dengan semua route terdaftar.
@@ -29,6 +34,8 @@ func New(cfg *Config) http.Handler {
 	mux.HandleFunc("/api/files", HandleFiles(cfg))
 	mux.HandleFunc("/api/download", HandleDownload(cfg))
 	mux.HandleFunc("/api/stream", HandleStream(cfg))
+	mux.HandleFunc("/api/transcode", HandleTranscode(cfg))
+	mux.HandleFunc("/api/probe", HandleProbe(cfg))
 	mux.HandleFunc("/api/subtitle", HandleSubtitle(cfg))
 	mux.HandleFunc("/api/subtitles", HandleSubtitles(cfg))
 	mux.HandleFunc("/api/upload", HandleUpload(cfg))

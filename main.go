@@ -28,6 +28,15 @@ func main() {
 		fmt.Printf("INFO: Folder '%s' dibuat otomatis.\n", cfg.SharedFolder)
 	}
 
+	// Cek ketersediaan ffmpeg untuk fitur embedded subtitle
+	if cfg.FFmpegBinary() == "" {
+		log.Println("WARNING: ffmpeg tidak ditemukan. Embedded subtitle dari MKV/MP4 tidak akan tersedia.")
+		log.Println("         Install ffmpeg: winget install --id=Gyan.FFmpeg -e")
+		log.Println("         Atau set 'ffmpeg_path' di config.json ke path ffmpeg yang sudah diinstall.")
+	} else {
+		log.Printf("INFO: ffmpeg ditemukan di: %s", cfg.FFmpegBinary())
+	}
+
 	// Setup PIN jika diaktifkan
 	if cfg.PINEnabled {
 		pin := server.InitPIN()

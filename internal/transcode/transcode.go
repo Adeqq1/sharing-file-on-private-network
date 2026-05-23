@@ -266,15 +266,30 @@ func buildFFmpegArgs(absPath string, probe *ProbeResult, startSec float64, burnS
 
 	var codecArgs []string
 	if burnSubIndex >= 0 {
-		// Burn-in subtitle: paksa full re-encode karena overlay tidak bisa di-copy.
-		// Gunakan filter subtitles= dengan path yang di-escape untuk Windows.
+		// Burn-in subtitle image-based (PGS/VobSub): harus pakai -filter_complex overlay,
+		// BUKAN -vf subtitles= (yang hanya support text-based SRT/ASS).
+		// Syntax: [0:v][0:s:N]overlay[v]  di mana N = index relatif subtitle stream.
 		si := subStreamIndex(probe, burnSubIndex)
-		videoFilter := fmt.Sprintf("subtitles='%s':si=%d", escapeForFFmpegFilter(absPath), si)
-		codecArgs = []string{
-			"-vf", videoFilter,
+		filterComplex := fmt.Sprintf("[0:v][0:s:%d]overlay[v]", si)
+		// Hapus -map 0:v:0 dan -map 0:a:0? dari base karena -filter_complex butuh -map eksplisit
+		// yang berbeda. Kita rebuild args dari awal untuk kasus burn-in.
+		burnBase := []string{"-hide_banner", "-loglevel", "error"}
+		if startSec > 0 {
+			burnBase = append(burnBase, "-ss", strconv.FormatFloat(startSec, 'f', 1, 64))
+		}
+		burnBase = append(burnBase, "-i", absPath)
+		burnArgs := append(burnBase,
+			"-filter_complex", filterComplex,
+			"-map", "[v]",
+			"-map", "0:a:0?",
 			"-c:v", "libx264", "-preset", "veryfast", "-crf", "23", "-pix_fmt", "yuv420p",
 			"-c:a", "aac", "-b:a", "192k", "-ac", "2",
-		}
+			"-f", "mp4",
+			"-movflags", "frag_keyframe+empty_moov+default_base_moof",
+			"-reset_timestamps", "1",
+			"pipe:1",
+		)
+		return burnArgs
 	} else {
 		switch {
 		case videoOK && audioOK:
@@ -387,17 +402,20 @@ func (lw *limitedWriter) Write(p []byte) (int, error) {
 }
 
 // escapeForFFmpegFilter meng-escape path untuk dipakai di dalam ffmpeg filter syntax.
-// ffmpeg filter subtitles= butuh escape khusus: colon → \:, backslash → \\, kutip → \'.
-// Contoh: "C:\foo\bar.mkv" → "C\:/foo/bar.mkv"
+// Dipakai untuk filter subtitles= (text-based). Untuk PGS burn-in, pakai -filter_complex overlay.
+// Escape yang diperlukan: colon → \:, backslash → \\, kutip → \', kurung siku → \[ \]
 func escapeForFFmpegFilter(path string) string {
 	// Konversi ke forward slash dulu
 	p := filepath.ToSlash(path)
-	// Escape backslash yang tersisa (seharusnya tidak ada setelah ToSlash, tapi jaga-jaga)
+	// Escape backslash yang tersisa
 	p = strings.ReplaceAll(p, `\`, `\\`)
 	// Escape colon (drive letter di Windows: "C:" → "C\:")
 	p = strings.ReplaceAll(p, `:`, `\:`)
 	// Escape single quote
 	p = strings.ReplaceAll(p, `'`, `\'`)
+	// Escape kurung siku — sensitif di filtergraph syntax (mis. [Kusonime] di nama folder)
+	p = strings.ReplaceAll(p, `[`, `\[`)
+	p = strings.ReplaceAll(p, `]`, `\]`)
 	return p
 }
 

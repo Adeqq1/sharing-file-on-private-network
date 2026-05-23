@@ -30,6 +30,8 @@ const cplayer = {
     totalDuration: 0,        // durasi penuh video dari /api/probe (untuk display & seek)
     isTranscoded: false,     // true kalau src berasal dari /api/transcode
     pendingSeek: null,       // detik tujuan saat seek sedang dalam proses (untuk debounce)
+    // ── Burn-in subtitle (PGS) ──
+    burnSubIndex: -1,        // >= 0 kalau sedang mode burn-in PGS; -1 = tidak burn-in
   },
   abort: null, // AbortController untuk listener per-video
 };
@@ -102,7 +104,7 @@ function initCplayer() {
 function setupVideoEvents() {
   const v = cplayer.video;
 
-  v.addEventListener('loadedmetadata', async () => {
+  v.addEventListener('loadedmetadata', () => {
     updateTimeUI();
     // Resume playback position
     const path = cplayer.state.currentPath;
@@ -111,34 +113,47 @@ function setupVideoEvents() {
     // Skip auto-resume kalau sudah di-reload dari offset (transcodeOffset > 0)
     if (cplayer.state.transcodeOffset > 0) return;
 
-    // Coba ambil posisi dari server dulu (cross-device), fallback ke localStorage
-    let saved = 0;
-    try {
-      const res = await fetch('/api/history');
-      if (res.ok) {
-        const list = await res.json();
-        const found = (list || []).find(e => e.path === path);
-        if (found && !found.completed) {
-          saved = found.position_sec;
-        }
-      }
-    } catch (_) { /* network error — fallback ke localStorage */ }
+    // Ambil posisi dari cache history app.js (sudah di-fetch saat loadFiles).
+    // Tidak perlu fetch ulang — menghindari race condition dan double round-trip.
+    _attemptResume(path);
+  });
 
+  // _attemptResume: cek posisi tersimpan dan resume kalau valid.
+  // Dipanggil dari loadedmetadata DAN dari setTotalDuration (setelah probe balik).
+  function _attemptResume(path) {
+    if (cplayer.state.transcodeOffset > 0) return; // sudah di-seek, skip
+
+    // Ambil dari cache app.js dulu (cross-device, server-side)
+    let saved = 0;
+    const histEntry = window.watchHistoryByPath?.[path];
+    if (histEntry && !histEntry.completed) {
+      saved = histEntry.position_sec;
+    }
+    // Fallback ke localStorage kalau cache kosong
     if (saved === 0) {
       saved = parseFloat(localStorage.getItem('cp_pos_' + path) || '0');
     }
+    if (saved <= RESUME_MIN_SEC) return;
 
     const fullDur = effectiveDuration();
-    if (saved > RESUME_MIN_SEC && isFinite(fullDur) && saved < fullDur - RESUME_MARGIN_SEC) {
-      if (cplayer.state.isTranscoded) {
-        requestTranscodeSeek(saved);
-        showToastFromPlayer(`▶ Lanjut dari ${formatTime(saved)}`);
-      } else {
-        v.currentTime = saved;
-        showToastFromPlayer(`▶ Lanjut dari ${formatTime(saved)}`);
-      }
+    // Kalau durasi belum diketahui (probe belum balik), simpan saved untuk dicoba lagi
+    // saat setTotalDuration dipanggil.
+    if (!isFinite(fullDur) || fullDur <= 0) {
+      cplayer.state._pendingResumeSec = saved;
+      return;
     }
-  });
+    if (saved >= fullDur - RESUME_MARGIN_SEC) return;
+
+    cplayer.state._pendingResumeSec = null;
+    if (cplayer.state.isTranscoded) {
+      requestTranscodeSeek(saved);
+    } else {
+      v.currentTime = saved;
+    }
+    showToastFromPlayer(`▶ Lanjut dari ${formatTime(saved)}`);
+  }
+  // Expose agar setTotalDuration bisa trigger resume setelah probe balik
+  window._attemptResume = _attemptResume;
 
   // Pakai requestAnimationFrame untuk update progress (poin #22)
   let lastSyncTime = 0;
@@ -182,7 +197,8 @@ function setupVideoEvents() {
       duration_sec: effectiveDuration() || 0,
     });
     if (navigator.sendBeacon) {
-      navigator.sendBeacon('/api/history/update', body);
+      // Pakai Blob agar Content-Type = application/json (string body default ke text/plain)
+      navigator.sendBeacon('/api/history/update', new Blob([body], { type: 'application/json' }));
     } else {
       fetch('/api/history/update', {
         method: 'POST',
@@ -717,13 +733,15 @@ function switchSubtitleEntry(entry) {
   if (entry.image && entry.track !== undefined) {
     showToastFromPlayer('🎨 Memuat ulang dengan subtitle ditanam ke video...');
     const curPos = effectiveCurrentTime();
-    const params = new URLSearchParams({ path, t: Math.max(0, Math.floor(curPos)), burnSub: entry.track });
+    const t = Math.max(0, Math.floor(curPos));
+    const params = new URLSearchParams({ path, t, burnSub: entry.track });
     const url = '/api/transcode?' + params.toString();
 
-    cplayer.state.transcodeOffset = Math.max(0, Math.floor(curPos));
+    cplayer.state.transcodeOffset = t;
     cplayer.state.isTranscoded = true;
     cplayer.state.currentLang = entry.lang || '';
     cplayer.state.ccEnabled = true;
+    cplayer.state.burnSubIndex = entry.track; // simpan agar seek bisa preserve
 
     const v = cplayer.video;
     const wasPaused = v.paused;
@@ -737,6 +755,8 @@ function switchSubtitleEntry(entry) {
 
   // KASUS NORMAL: subtitle text-based (external .srt/.vtt atau embedded ASS/SRT).
   // Endpoint /api/subtitle handle keduanya — embedded pakai lang="embed:N".
+  // Reset burn-in mode kalau sebelumnya aktif.
+  cplayer.state.burnSubIndex = -1;
   const url = '/api/subtitle?path=' + encodeURIComponent(path) +
               (entry.lang ? '&lang=' + encodeURIComponent(entry.lang) : '');
 
@@ -767,9 +787,32 @@ function switchSubtitleEntry(entry) {
 }
 
 function toggleCC(forceState) {
+  const newState = (forceState !== undefined) ? forceState : !cplayer.state.ccEnabled;
+
+  // Kalau sedang mode burn-in PGS dan user minta Off → reload video tanpa burnSub
+  if (!newState && cplayer.state.burnSubIndex >= 0) {
+    cplayer.state.burnSubIndex = -1;
+    cplayer.state.ccEnabled = false;
+    cplayer.state.currentLang = '';
+    const path = cplayer.state.currentPath;
+    if (!path) return;
+    const t = Math.max(0, Math.floor(effectiveCurrentTime()));
+    const params = new URLSearchParams({ path, t });
+    const url = '/api/transcode?' + params.toString();
+    cplayer.state.transcodeOffset = t;
+    const v = cplayer.video;
+    const wasPaused = v.paused;
+    v.src = url;
+    v.load();
+    if (!wasPaused) {
+      v.addEventListener('canplay', () => v.play().catch(() => {}), { once: true });
+    }
+    showToastFromPlayer('Subtitle dimatikan');
+    return;
+  }
+
   const tracks = cplayer.video.textTracks;
   if (!tracks || tracks.length === 0) return;
-  const newState = (forceState !== undefined) ? forceState : !cplayer.state.ccEnabled;
   cplayer.state.ccEnabled = newState;
   tracks[tracks.length - 1].mode = newState ? 'showing' : 'hidden';
 }
@@ -1098,7 +1141,12 @@ function _flushTranscodeSeek() {
   cplayer.state.transcodeOffset = t;
   cplayer.state.pendingSeek = null;
 
-  const url = '/api/transcode?' + new URLSearchParams({ path, t }).toString();
+  // Preserve burnSub kalau sedang mode burn-in PGS
+  const params = { path, t };
+  if (cplayer.state.burnSubIndex >= 0) {
+    params.burnSub = cplayer.state.burnSubIndex;
+  }
+  const url = '/api/transcode?' + new URLSearchParams(params).toString();
   const v = cplayer.video;
   const wasPaused = v.paused;
   v.src = url;
@@ -1108,8 +1156,9 @@ function _flushTranscodeSeek() {
     v.addEventListener('canplay', () => v.play().catch(() => {}), { once: true });
   }
 
-  // Peringatan subtitle offset — tampilkan sekali per session kalau subtitle aktif
-  if (cplayer.state.ccEnabled && cplayer.video.textTracks.length > 0 &&
+  // Peringatan subtitle offset — tampilkan sekali per session kalau subtitle aktif (text-based)
+  if (cplayer.state.ccEnabled && cplayer.state.burnSubIndex < 0 &&
+      cplayer.video.textTracks.length > 0 &&
       !sessionStorage.getItem('cp_subOffsetWarned')) {
     sessionStorage.setItem('cp_subOffsetWarned', '1');
     showToastFromPlayer('⚠ Subtitle mungkin offset setelah lompat');
@@ -1319,6 +1368,8 @@ function resetCplayer() {
   cplayer.state.totalDuration   = 0;
   cplayer.state.isTranscoded    = false;
   cplayer.state.pendingSeek     = null;
+  cplayer.state.burnSubIndex    = -1;
+  cplayer.state._pendingResumeSec = null;
   clearTimeout(_seekDebounceTimer);
 
   // Reset CSS rotate kalau masih aktif saat player ditutup
@@ -1345,8 +1396,17 @@ function setPlayerItem(item, path) {
 // Kalau durationSec = 0 dan isTranscoded = true, flag isTranscoded tetap di-set
 // agar effectiveDuration() tahu ini transcoded (fallback ke video.duration native
 // sampai probe balik dengan durasi sesungguhnya).
+// Setelah durasi diketahui, coba resume kalau ada pending resume dari loadedmetadata.
 function setTotalDuration(durationSec, isTranscoded) {
   cplayer.state.totalDuration  = durationSec || 0;
   cplayer.state.isTranscoded   = !!isTranscoded;
   cplayer.state.transcodeOffset = 0;
+
+  // Kalau ada pending resume (loadedmetadata fire sebelum probe balik), coba sekarang
+  if (durationSec > 0 && cplayer.state._pendingResumeSec != null) {
+    const path = cplayer.state.currentPath;
+    if (path && typeof window._attemptResume === 'function') {
+      window._attemptResume(path);
+    }
+  }
 }

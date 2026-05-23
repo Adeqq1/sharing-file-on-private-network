@@ -168,11 +168,20 @@ async function loadFiles(relPath = '') {
   searchInput.value = '';
   showSkeleton();
 
-  // Fetch history dan files secara paralel
-  await loadHistoryCache();
+  // Fetch history dan files secara PARALEL untuk mengurangi latency
+  const [, filesRes] = await Promise.allSettled([
+    loadHistoryCache(),
+    apiFetch('/api/files?path=' + encodeURIComponent(relPath)),
+  ]);
+
+  if (filesRes.status === 'rejected') {
+    fileList.innerHTML = '';
+    showError('Tidak dapat terhubung ke server. Pastikan server berjalan.');
+    return;
+  }
 
   try {
-    const res = await apiFetch('/api/files?path=' + encodeURIComponent(relPath));
+    const res = filesRes.value;
     const data = await res.json();
     if (!res.ok) {
       fileList.innerHTML = '';
@@ -236,41 +245,38 @@ function renderFiles(items) {
       <span class="file-arrow" aria-hidden="true">${item.is_dir ? '›' : '⋯'}</span>
     `;
 
-    li.addEventListener('click', async () => {
+    li.addEventListener('click', () => {
       if (item.is_dir) {
         loadFiles(state.currentPath ? state.currentPath + '/' + item.name : item.name);
         return;
       }
       if (item.streamable) {
-        // Pre-flight probe untuk video transcode: warning HEVC + cek antrian
-        if (item.needs_transcode && item.streamable === 'video') {
-          // Cek antrian transcode
-          try {
-            const statusRes = await fetch('/api/transcode/status');
-            if (statusRes.ok) {
-              const status = await statusRes.json();
-              if (!status.available) {
-                showToast('⏳ Server sibuk transcode video lain. Tunggu beberapa detik...');
-              }
-            }
-          } catch (_) { /* tidak fatal */ }
+        // Buka player SEGERA — jangan await probe/status agar tidak ada delay tap
+        openPlayer(item);
 
-          // Warning HEVC (sekali per session)
-          try {
-            const probeRes = await fetch('/api/probe?path=' + encodeURIComponent(filePathOf(item)));
-            if (probeRes.ok) {
-              const probe = await probeRes.json();
-              const vc = (probe.streams || []).find(s => s.type === 'video');
-              if (vc && (vc.codec === 'hevc' || vc.codec === 'h265' || vc.codec === 'av1')) {
-                if (!sessionStorage.getItem('cp_hevcWarned')) {
+        // Pre-flight checks berjalan di background (tidak block openPlayer)
+        if (item.needs_transcode && item.streamable === 'video') {
+          // Cek antrian transcode (background)
+          fetch('/api/transcode/status').then(r => r.ok ? r.json() : null).then(status => {
+            if (status && !status.available) {
+              showToast('⏳ Server sibuk transcode video lain. Tunggu beberapa detik...');
+            }
+          }).catch(() => {});
+
+          // Warning HEVC (background, sekali per session)
+          if (!sessionStorage.getItem('cp_hevcWarned')) {
+            fetch('/api/probe?path=' + encodeURIComponent(filePathOf(item)))
+              .then(r => r.ok ? r.json() : null)
+              .then(probe => {
+                if (!probe) return;
+                const vc = (probe.streams || []).find(s => s.type === 'video');
+                if (vc && (vc.codec === 'hevc' || vc.codec === 'h265' || vc.codec === 'av1')) {
                   sessionStorage.setItem('cp_hevcWarned', '1');
                   showToast('🎬 Codec ' + vc.codec.toUpperCase() + ' terdeteksi. Transcode butuh CPU besar.');
                 }
-              }
-            }
-          } catch (_) { /* probe fail tidak fatal */ }
+              }).catch(() => {});
+          }
         }
-        openPlayer(item);
       } else {
         downloadFile(item);
         showToast('⬇ Mendownload "' + item.name + '"');
@@ -362,6 +368,12 @@ function openPlayer(item) {
   playerOverlay.classList.remove('hidden');
   document.body.style.overflow = 'hidden';
 
+  // Tampilkan tombol VLC di header hanya untuk video yang butuh transcode
+  const playerVlc = $('player-vlc');
+  if (playerVlc) {
+    playerVlc.style.display = (item.needs_transcode && item.streamable === 'video') ? '' : 'none';
+  }
+
   if (typeof setPlayerItem === 'function') setPlayerItem(item, filePathOf(item));
   if (typeof setQueue === 'function') setQueue(state.allItems, item);
 
@@ -432,6 +444,28 @@ function openPlayer(item) {
       setTimeout(() => showToast('🎬 Konversi format on-the-fly... CPU laptop akan naik sebentar.'), 500);
     }
 
+    // Untuk video transcode, tampilkan pesan elapsed di spinner agar user tidak pikir hang
+    if (item.needs_transcode) {
+      let elapsed = 0;
+      const spinnerMsg = document.createElement('div');
+      spinnerMsg.id = 'player-spinner-msg';
+      spinnerMsg.style.cssText = 'color:#fff;font-size:.8rem;margin-top:8px;text-align:center;opacity:.8';
+      spinnerMsg.textContent = 'Memproses video...';
+      playerSpinner.appendChild(spinnerMsg);
+      const elapsedTimer = setInterval(() => {
+        elapsed++;
+        spinnerMsg.textContent = `Memproses video... ${elapsed}s`;
+        if (elapsed >= 5) spinnerMsg.textContent = `Memproses video... ${elapsed}s (HEVC butuh waktu lebih lama)`;
+      }, 1000);
+      // Bersihkan timer saat canplay atau error
+      const clearTimer = () => {
+        clearInterval(elapsedTimer);
+        spinnerMsg.remove();
+      };
+      playerVideo.addEventListener('canplay', clearTimer, { once: true, signal: sig });
+      playerVideo.addEventListener('error', clearTimer, { once: true, signal: sig });
+    }
+
     playerVideo.src = streamURL;
     playerVideo.load();
 
@@ -491,7 +525,12 @@ function closePlayer() {
   if (typeof resetCplayer === 'function') resetCplayer();
   playerOverlay.classList.add('hidden');
   document.body.style.overflow = '';
-  state.currentPlayerItem = null; // clear agar tombol download tidak referensi item lama
+  state.currentPlayerItem = null;
+
+  // Refresh history cache dan re-render file list agar progress bar up-to-date
+  loadHistoryCache().then(() => {
+    if (state.allItems.length > 0) renderFiles(state.allItems);
+  });
 }
 
 // ===== Download =====
@@ -688,7 +727,18 @@ $('player-error-download').addEventListener('click', () => {
   }
 });
 
-// Player: tombol salin link untuk VLC / MX Player
+// Player: tombol salin link untuk VLC / MX Player (di header, selalu accessible)
+const playerVlcBtn = $('player-vlc');
+if (playerVlcBtn) {
+  playerVlcBtn.addEventListener('click', () => {
+    if (!state.currentPlayerItem) return;
+    const url = location.origin + '/api/stream?path=' + encodeURIComponent(filePathOf(state.currentPlayerItem));
+    copyToClipboard(url);
+    showToast('🔗 Link disalin. Buka VLC → Stream → paste link.');
+  });
+}
+
+// Player: tombol salin link untuk VLC / MX Player (di error state)
 $('player-error-native').addEventListener('click', () => {
   if (!state.currentPlayerItem) return;
   const url = location.origin + '/api/stream?path=' + encodeURIComponent(filePathOf(state.currentPlayerItem));
@@ -841,10 +891,15 @@ function openPlayerFromHistory(entry) {
     needs_transcode: ['mkv', 'avi', 'wmv', 'flv', 'ts'].includes(ext),
     has_subtitle: false,
   };
-  // Set currentPath agar filePathOf(fakeItem) menghasilkan path benar
+  // Navigasi ke folder yang benar dulu agar breadcrumb dan allItems konsisten,
+  // lalu buka player setelah loadFiles selesai.
   const slash = entry.path.lastIndexOf('/');
-  state.currentPath = slash >= 0 ? entry.path.slice(0, slash) : '';
-  openPlayer(fakeItem);
+  const dir = slash >= 0 ? entry.path.slice(0, slash) : '';
+  // Pindah ke tab home dulu agar file list terlihat saat player ditutup
+  switchTab('home');
+  loadFiles(dir).then(() => {
+    openPlayer(fakeItem);
+  });
 }
 
 // ===== Init =====

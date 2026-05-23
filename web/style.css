@@ -745,3 +745,50 @@ body.cp-rotated-active {
 }
 .settings-item-label { font-size: .95rem; }
 .settings-item-desc { font-size: .78rem; color: var(--text-muted); margin-top: 2px; }
+
+/* ===== Watch Progress Bar (file list) ===== */
+.watch-progress {
+  height: 3px;
+  background: var(--border, #e2e8f0);
+  border-radius: 2px;
+  margin-top: 5px;
+  overflow: hidden;
+}
+.watch-progress-fill {
+  height: 100%;
+  background: var(--accent, #2563eb);
+  border-radius: 2px;
+  transition: width .3s ease;
+}
+
+/* ===== History Tab ===== */
+.history-section {
+  padding: 0 0 80px;
+}
+.history-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 16px 8px;
+}
+.history-header h2 {
+  margin: 0;
+  font-size: 1.1rem;
+  font-weight: 600;
+}
+.btn-sm {
+  padding: 4px 12px;
+  font-size: .8rem;
+}
+.history-delete-btn {
+  flex-shrink: 0;
+  color: var(--text-muted);
+  font-size: 1rem;
+  padding: 4px 8px;
+  border-radius: var(--radius-sm);
+  transition: color var(--transition), background var(--transition);
+}
+.history-delete-btn:hover {
+  color: var(--danger, #ef4444);
+  background: rgba(239,68,68,.08);
+}

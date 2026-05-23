@@ -2,6 +2,7 @@ package server
 
 import (
 	"fmt"
+	"lan-server/internal/history"
 	"lan-server/internal/live"
 	"log"
 	"mime"
@@ -30,16 +31,30 @@ func init() {
 func New(cfg *Config) http.Handler {
 	mux := http.NewServeMux()
 
+	// History store — load dari disk, fallback ke store kosong kalau gagal
+	historyStore, err := history.Open(cfg.CacheDir())
+	if err != nil {
+		log.Printf("WARN: gagal load history store: %v — mulai dengan store kosong", err)
+		historyStore, _ = history.Open(cfg.CacheDir())
+	}
+
 	// API routes
 	mux.HandleFunc("/api/files", HandleFiles(cfg))
 	mux.HandleFunc("/api/download", HandleDownload(cfg))
 	mux.HandleFunc("/api/stream", HandleStream(cfg))
 	mux.HandleFunc("/api/transcode", HandleTranscode(cfg))
+	mux.HandleFunc("/api/transcode/status", HandleTranscodeStatus())
 	mux.HandleFunc("/api/probe", HandleProbe(cfg))
 	mux.HandleFunc("/api/subtitle", HandleSubtitle(cfg))
 	mux.HandleFunc("/api/subtitles", HandleSubtitles(cfg))
 	mux.HandleFunc("/api/upload", HandleUpload(cfg))
 	mux.HandleFunc("/api/login", HandleLogin(cfg.PINEnabled))
+
+	// History routes
+	mux.HandleFunc("/api/history", HandleHistoryList(historyStore))
+	mux.HandleFunc("/api/history/update", HandleHistoryUpdate(cfg, historyStore))
+	mux.HandleFunc("/api/history/delete", HandleHistoryDelete(historyStore))
+	mux.HandleFunc("/api/history/clear", HandleHistoryClear(historyStore))
 
 	// Live stream routes
 	hub := live.NewHub()

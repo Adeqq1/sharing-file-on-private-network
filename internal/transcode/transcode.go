@@ -155,6 +155,16 @@ func releaseTranscode() {
 	<-transcodeSem
 }
 
+// ActiveTranscodes mengembalikan jumlah transcode yang sedang berjalan.
+func ActiveTranscodes() int {
+	return len(transcodeSem)
+}
+
+// MaxTranscodes mengembalikan batas maksimum concurrent transcode.
+func MaxTranscodes() int {
+	return maxConcurrentTranscodes
+}
+
 // ── Streaming transcode/remux ─────────────────────────────────────────────────
 
 // Stream menjalankan ffmpeg dengan argumen yang sesuai berdasarkan hasil probe,
@@ -163,6 +173,9 @@ func releaseTranscode() {
 // startSec menentukan posisi mulai dalam detik (0 = dari awal).
 // Nilai > 0 akan menambahkan flag -ss sebelum -i (input seek — cepat, lompat
 // ke keyframe terdekat).
+//
+// burnSubIndex >= 0 mengaktifkan burn-in subtitle ke video output (untuk PGS/image subtitle).
+// Gunakan -1 untuk tidak burn-in.
 //
 // Strategi dipilih otomatis:
 //   - Remux only       : video H.264 + audio AAC/MP3/Opus → -c copy
@@ -174,9 +187,13 @@ func releaseTranscode() {
 //
 // Untuk full/audio transcode, semaphore dipakai agar max 2 proses berjalan
 // bersamaan. Remux tidak dibatasi karena hampir tidak pakai CPU.
-func Stream(ctx context.Context, absPath string, probe *ProbeResult, startSec float64, out io.Writer) error {
-	args := buildFFmpegArgs(absPath, probe, startSec)
+func Stream(ctx context.Context, absPath string, probe *ProbeResult, startSec float64, burnSubIndex int, out io.Writer) error {
+	args := buildFFmpegArgs(absPath, probe, startSec, burnSubIndex)
+	// Burn-in selalu butuh full transcode — paksa strategy bukan remux
 	strategy := strategyName(probe)
+	if burnSubIndex >= 0 {
+		strategy = "full transcode (burn-in)"
+	}
 
 	// Batasi concurrent transcode (bukan remux) via semaphore
 	if strategy != "remux" {
@@ -222,7 +239,8 @@ func Stream(ctx context.Context, absPath string, probe *ProbeResult, startSec fl
 
 // buildFFmpegArgs memilih argumen ffmpeg berdasarkan codec di probe.
 // startSec > 0 menambahkan -ss sebelum -i (input seek — cepat, lompat ke keyframe terdekat).
-func buildFFmpegArgs(absPath string, probe *ProbeResult, startSec float64) []string {
+// burnSubIndex >= 0 mengaktifkan burn-in subtitle via -vf subtitles filter.
+func buildFFmpegArgs(absPath string, probe *ProbeResult, startSec float64, burnSubIndex int) []string {
 	// Argumen dasar: tidak tampilkan banner, tidak interaktif
 	base := []string{
 		"-hide_banner", "-loglevel", "error",
@@ -247,21 +265,33 @@ func buildFFmpegArgs(absPath string, probe *ProbeResult, startSec float64) []str
 	audioOK := probe != nil && AudioCodecCompatible(probe.AudioCodec())
 
 	var codecArgs []string
-	switch {
-	case videoOK && audioOK:
-		// Remux: copy semua stream tanpa re-encode (~0% CPU)
-		codecArgs = []string{"-c", "copy"}
-	case videoOK && !audioOK:
-		// Audio transcode only: video di-copy, audio di-encode ke AAC stereo
+	if burnSubIndex >= 0 {
+		// Burn-in subtitle: paksa full re-encode karena overlay tidak bisa di-copy.
+		// Gunakan filter subtitles= dengan path yang di-escape untuk Windows.
+		si := subStreamIndex(probe, burnSubIndex)
+		videoFilter := fmt.Sprintf("subtitles='%s':si=%d", escapeForFFmpegFilter(absPath), si)
 		codecArgs = []string{
-			"-c:v", "copy",
-			"-c:a", "aac", "-b:a", "192k", "-ac", "2",
-		}
-	default:
-		// Full transcode: video ke H.264, audio ke AAC
-		codecArgs = []string{
+			"-vf", videoFilter,
 			"-c:v", "libx264", "-preset", "veryfast", "-crf", "23", "-pix_fmt", "yuv420p",
 			"-c:a", "aac", "-b:a", "192k", "-ac", "2",
+		}
+	} else {
+		switch {
+		case videoOK && audioOK:
+			// Remux: copy semua stream tanpa re-encode (~0% CPU)
+			codecArgs = []string{"-c", "copy"}
+		case videoOK && !audioOK:
+			// Audio transcode only: video di-copy, audio di-encode ke AAC stereo
+			codecArgs = []string{
+				"-c:v", "copy",
+				"-c:a", "aac", "-b:a", "192k", "-ac", "2",
+			}
+		default:
+			// Full transcode: video ke H.264, audio ke AAC
+			codecArgs = []string{
+				"-c:v", "libx264", "-preset", "veryfast", "-crf", "23", "-pix_fmt", "yuv420p",
+				"-c:a", "aac", "-b:a", "192k", "-ac", "2",
+			}
 		}
 	}
 
@@ -354,4 +384,38 @@ func (lw *limitedWriter) Write(p []byte) (int, error) {
 	n, err := lw.w.Write(p)
 	lw.n += n
 	return len(p), err // kembalikan len asli agar ffmpeg tidak bingung
+}
+
+// escapeForFFmpegFilter meng-escape path untuk dipakai di dalam ffmpeg filter syntax.
+// ffmpeg filter subtitles= butuh escape khusus: colon → \:, backslash → \\, kutip → \'.
+// Contoh: "C:\foo\bar.mkv" → "C\:/foo/bar.mkv"
+func escapeForFFmpegFilter(path string) string {
+	// Konversi ke forward slash dulu
+	p := filepath.ToSlash(path)
+	// Escape backslash yang tersisa (seharusnya tidak ada setelah ToSlash, tapi jaga-jaga)
+	p = strings.ReplaceAll(p, `\`, `\\`)
+	// Escape colon (drive letter di Windows: "C:" → "C\:")
+	p = strings.ReplaceAll(p, `:`, `\:`)
+	// Escape single quote
+	p = strings.ReplaceAll(p, `'`, `\'`)
+	return p
+}
+
+// subStreamIndex mengkonversi global stream index ke index relatif di antara subtitle stream.
+// ffmpeg filter subtitles=...:si=N butuh index DI ANTARA SUBTITLE saja, bukan global.
+func subStreamIndex(probe *ProbeResult, globalIdx int) int {
+	if probe == nil {
+		return 0
+	}
+	si := 0
+	for _, s := range probe.Streams {
+		if s.Type != "subtitle" {
+			continue
+		}
+		if s.Index == globalIdx {
+			return si
+		}
+		si++
+	}
+	return 0
 }

@@ -37,6 +37,7 @@
         <!-- Top Tabs (Desktop) -->
         <nav class="top-tabs" id="top-tabs" aria-label="Navigasi utama">
           <a href="#home" class="top-tab active" data-tab="home">File</a>
+          <a href="#history" class="top-tab" data-tab="history">Lanjut Nonton</a>
           <a href="#live" class="top-tab" data-tab="live">
             Live <span class="live-badge hidden" id="live-nav-badge" aria-hidden="true"></span>
           </a>
@@ -97,6 +98,18 @@
         <div id="live-container" class="live-container"></div>
       </section>
 
+      <!-- ===== History Tab ===== -->
+      <section data-tab="history" class="hidden">
+        <div class="history-section">
+          <div class="history-header">
+            <h2>📺 Lanjut Nonton</h2>
+            <button id="btn-history-clear" class="btn btn-secondary btn-sm" title="Hapus semua riwayat">Hapus Semua</button>
+          </div>
+          <ul id="history-list" class="file-list" role="list"></ul>
+          <p id="history-empty" class="empty-msg hidden">Belum ada riwayat. Putar video apa saja untuk mulai.</p>
+        </div>
+      </section>
+
       <!-- ===== Settings Tab ===== -->
       <section data-tab="settings" class="hidden">
         <div class="settings-section">
@@ -134,6 +147,12 @@
           <path d="M10 20v-6h4v6h5v-8h3L12 3 2 12h3v8z"/>
         </svg>
         <span>File</span>
+      </a>
+      <a href="#history" class="bottom-nav-item" data-tab="history">
+        <svg viewBox="0 0 24 24" width="22" height="22" fill="currentColor">
+          <path d="M13 3a9 9 0 1 0 9 9h-2a7 7 0 1 1-7-7v3l4-4-4-4v3z"/>
+        </svg>
+        <span>Lanjut</span>
       </a>
       <a href="#live" class="bottom-nav-item" data-tab="live">
         <svg viewBox="0 0 24 24" width="22" height="22" fill="currentColor">
@@ -248,6 +267,12 @@
                 <path d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z"/>
               </svg>
               Download ke HP
+            </button>
+            <button id="player-error-native" class="btn btn-secondary" style="margin-top:8px">
+              <svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor" style="flex-shrink:0">
+                <path d="M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z"/>
+              </svg>
+              Salin link untuk VLC / MX Player
             </button>
           </div>
         </div>

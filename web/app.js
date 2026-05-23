@@ -70,6 +70,7 @@ function switchTab(tabName) {
     if (btn) btn.style.display = tabName === 'home' ? '' : 'none';
   });
   if (tabName === 'live' && typeof initLiveTab === 'function') initLiveTab();
+  if (tabName === 'history') renderHistory();
 }
 
 document.querySelectorAll('[data-tab]').forEach(el => {
@@ -167,6 +168,9 @@ async function loadFiles(relPath = '') {
   searchInput.value = '';
   showSkeleton();
 
+  // Fetch history dan files secara paralel
+  await loadHistoryCache();
+
   try {
     const res = await apiFetch('/api/files?path=' + encodeURIComponent(relPath));
     const data = await res.json();
@@ -213,24 +217,61 @@ function renderFiles(items) {
       ? `<span class="stream-badge">${item.streamable === 'video' ? '▶ Video' : '♪ Audio'}</span>`
       : (item.native_play ? `<span class="native-badge">⬇ Download</span>` : '');
 
+    // Progress bar untuk video yang ada di history
+    const fullPath = state.currentPath ? state.currentPath + '/' + item.name : item.name;
+    const histEntry = watchHistoryByPath[fullPath];
+    let progressHTML = '';
+    if (histEntry && histEntry.duration_sec > 0 && !histEntry.completed) {
+      const pct = Math.min(100, (histEntry.position_sec / histEntry.duration_sec) * 100);
+      progressHTML = `<div class="watch-progress"><div class="watch-progress-fill" style="width:${pct.toFixed(1)}%"></div></div>`;
+    }
+
     li.innerHTML = `
       <span class="file-icon" aria-hidden="true">${getIcon(item)}</span>
       <div class="file-info">
         <div class="file-name">${escapeHtml(item.name)}${streamBadge}</div>
         <div class="file-meta">${escapeHtml(meta)}</div>
+        ${progressHTML}
       </div>
       <span class="file-arrow" aria-hidden="true">${item.is_dir ? '›' : '⋯'}</span>
     `;
 
-    li.addEventListener('click', () => {
+    li.addEventListener('click', async () => {
       if (item.is_dir) {
-        // Masuk folder
         loadFiles(state.currentPath ? state.currentPath + '/' + item.name : item.name);
-      } else if (item.streamable) {
-        // Video/audio yang bisa diputar (native atau via transcode) → buka custom player
+        return;
+      }
+      if (item.streamable) {
+        // Pre-flight probe untuk video transcode: warning HEVC + cek antrian
+        if (item.needs_transcode && item.streamable === 'video') {
+          // Cek antrian transcode
+          try {
+            const statusRes = await fetch('/api/transcode/status');
+            if (statusRes.ok) {
+              const status = await statusRes.json();
+              if (!status.available) {
+                showToast('⏳ Server sibuk transcode video lain. Tunggu beberapa detik...');
+              }
+            }
+          } catch (_) { /* tidak fatal */ }
+
+          // Warning HEVC (sekali per session)
+          try {
+            const probeRes = await fetch('/api/probe?path=' + encodeURIComponent(filePathOf(item)));
+            if (probeRes.ok) {
+              const probe = await probeRes.json();
+              const vc = (probe.streams || []).find(s => s.type === 'video');
+              if (vc && (vc.codec === 'hevc' || vc.codec === 'h265' || vc.codec === 'av1')) {
+                if (!sessionStorage.getItem('cp_hevcWarned')) {
+                  sessionStorage.setItem('cp_hevcWarned', '1');
+                  showToast('🎬 Codec ' + vc.codec.toUpperCase() + ' terdeteksi. Transcode butuh CPU besar.');
+                }
+              }
+            }
+          } catch (_) { /* probe fail tidak fatal */ }
+        }
         openPlayer(item);
       } else {
-        // File biasa (PDF, ZIP, gambar, dll) → download langsung
         downloadFile(item);
         showToast('⬇ Mendownload "' + item.name + '"');
       }
@@ -436,6 +477,9 @@ function pickStreamURL(item) {
 }
 
 function closePlayer() {
+  // Sync history sebelum tutup player
+  if (typeof syncHistoryNow === 'function') syncHistoryNow();
+
   playerAbort.abort();
   playerAbort = new AbortController();
   const playerVideo = $('player-video');
@@ -644,6 +688,30 @@ $('player-error-download').addEventListener('click', () => {
   }
 });
 
+// Player: tombol salin link untuk VLC / MX Player
+$('player-error-native').addEventListener('click', () => {
+  if (!state.currentPlayerItem) return;
+  const url = location.origin + '/api/stream?path=' + encodeURIComponent(filePathOf(state.currentPlayerItem));
+  copyToClipboard(url);
+  showToast('🔗 Link disalin. Buka VLC → Stream → paste link.');
+});
+
+function copyToClipboard(text) {
+  if (navigator.clipboard && location.protocol === 'https:') {
+    navigator.clipboard.writeText(text).catch(() => {});
+    return;
+  }
+  // Fallback untuk HTTP (LAN biasanya non-HTTPS)
+  const ta = document.createElement('textarea');
+  ta.value = text;
+  ta.style.position = 'fixed';
+  ta.style.opacity = '0';
+  document.body.appendChild(ta);
+  ta.select();
+  try { document.execCommand('copy'); } catch (_) {}
+  document.body.removeChild(ta);
+}
+
 // Player: PiP
 playerPip.addEventListener('click', async () => {
   const playerVideo = $('player-video');
@@ -682,6 +750,113 @@ document.querySelectorAll('.pin-digit').forEach((input, idx, all) => {
 });
 $('btn-login').addEventListener('click', submitPIN);
 
+// ===== Watch History =====
+
+let watchHistoryByPath = {}; // cache: { "<rel-path>": Entry }
+
+async function loadHistoryCache() {
+  try {
+    const res = await fetch('/api/history');
+    if (!res.ok) { watchHistoryByPath = {}; return; }
+    const list = await res.json();
+    watchHistoryByPath = {};
+    for (const e of (list || [])) {
+      watchHistoryByPath[e.path] = e;
+    }
+  } catch (_) {
+    watchHistoryByPath = {};
+  }
+}
+
+async function renderHistory() {
+  const ul = $('history-list');
+  const emptyEl = $('history-empty');
+  if (!ul) return;
+  ul.innerHTML = '';
+  await loadHistoryCache();
+  const list = Object.values(watchHistoryByPath).sort((a, b) =>
+    new Date(b.watched_at) - new Date(a.watched_at)
+  );
+  if (list.length === 0) {
+    emptyEl.classList.remove('hidden');
+    return;
+  }
+  emptyEl.classList.add('hidden');
+  const frag = document.createDocumentFragment();
+  for (const e of list) {
+    const li = document.createElement('li');
+    li.className = 'file-item';
+    const pct = e.duration_sec > 0
+      ? Math.min(100, (e.position_sec / e.duration_sec) * 100)
+      : 0;
+    const remainSec = Math.max(0, e.duration_sec - e.position_sec);
+    const meta = e.completed
+      ? '✓ Selesai'
+      : `⏱ ${formatTimeShort(e.position_sec)} / ${formatTimeShort(e.duration_sec)} · sisa ${formatTimeShort(remainSec)}`;
+    li.innerHTML = `
+      <span class="file-icon" aria-hidden="true">🎬</span>
+      <div class="file-info">
+        <div class="file-name">${escapeHtml(e.name)}</div>
+        <div class="file-meta">${escapeHtml(e.path)}</div>
+        <div class="file-meta">${meta}</div>
+        <div class="watch-progress"><div class="watch-progress-fill" style="width:${pct.toFixed(1)}%"></div></div>
+      </div>
+      <button class="icon-btn history-delete-btn" data-path="${escapeHtml(e.path)}" title="Hapus dari riwayat" aria-label="Hapus dari riwayat">✕</button>
+    `;
+    li.addEventListener('click', (ev) => {
+      if (ev.target.closest('.history-delete-btn')) return;
+      openPlayerFromHistory(e);
+    });
+    li.querySelector('.history-delete-btn').addEventListener('click', async (ev) => {
+      ev.stopPropagation();
+      if (!confirm('Hapus "' + e.name + '" dari riwayat?')) return;
+      await fetch('/api/history/delete?path=' + encodeURIComponent(e.path), { method: 'DELETE' });
+      renderHistory();
+    });
+    frag.appendChild(li);
+  }
+  ul.appendChild(frag);
+}
+
+function formatTimeShort(sec) {
+  if (!isFinite(sec) || sec < 0) sec = 0;
+  const m = Math.floor(sec / 60);
+  const s = Math.floor(sec % 60).toString().padStart(2, '0');
+  if (m >= 60) {
+    const h = Math.floor(m / 60);
+    const mm = (m % 60).toString().padStart(2, '0');
+    return `${h}:${mm}:${s}`;
+  }
+  return `${m}:${s}`;
+}
+
+// openPlayerFromHistory: buka player dari entry history tanpa item lengkap dari API.
+function openPlayerFromHistory(entry) {
+  const ext = (entry.path.split('.').pop() || '').toLowerCase();
+  const fakeItem = {
+    name: entry.name,
+    is_dir: false,
+    ext,
+    streamable: 'video',
+    needs_transcode: ['mkv', 'avi', 'wmv', 'flv', 'ts'].includes(ext),
+    has_subtitle: false,
+  };
+  // Set currentPath agar filePathOf(fakeItem) menghasilkan path benar
+  const slash = entry.path.lastIndexOf('/');
+  state.currentPath = slash >= 0 ? entry.path.slice(0, slash) : '';
+  openPlayer(fakeItem);
+}
+
 // ===== Init =====
 if (typeof initCplayer === 'function') initCplayer();
 checkAuth();
+
+// History clear button
+const btnHistoryClear = $('btn-history-clear');
+if (btnHistoryClear) {
+  btnHistoryClear.addEventListener('click', async () => {
+    if (!confirm('Hapus semua riwayat tontonan?')) return;
+    await fetch('/api/history/clear', { method: 'POST' });
+    renderHistory();
+  });
+}

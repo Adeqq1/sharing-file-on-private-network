@@ -102,7 +102,7 @@ function initCplayer() {
 function setupVideoEvents() {
   const v = cplayer.video;
 
-  v.addEventListener('loadedmetadata', () => {
+  v.addEventListener('loadedmetadata', async () => {
     updateTimeUI();
     // Resume playback position
     const path = cplayer.state.currentPath;
@@ -111,7 +111,23 @@ function setupVideoEvents() {
     // Skip auto-resume kalau sudah di-reload dari offset (transcodeOffset > 0)
     if (cplayer.state.transcodeOffset > 0) return;
 
-    const saved = parseFloat(localStorage.getItem('cp_pos_' + path) || '0');
+    // Coba ambil posisi dari server dulu (cross-device), fallback ke localStorage
+    let saved = 0;
+    try {
+      const res = await fetch('/api/history');
+      if (res.ok) {
+        const list = await res.json();
+        const found = (list || []).find(e => e.path === path);
+        if (found && !found.completed) {
+          saved = found.position_sec;
+        }
+      }
+    } catch (_) { /* network error — fallback ke localStorage */ }
+
+    if (saved === 0) {
+      saved = parseFloat(localStorage.getItem('cp_pos_' + path) || '0');
+    }
+
     const fullDur = effectiveDuration();
     if (saved > RESUME_MIN_SEC && isFinite(fullDur) && saved < fullDur - RESUME_MARGIN_SEC) {
       if (cplayer.state.isTranscoded) {
@@ -125,17 +141,59 @@ function setupVideoEvents() {
   });
 
   // Pakai requestAnimationFrame untuk update progress (poin #22)
+  let lastSyncTime = 0;
   v.addEventListener('timeupdate', () => {
     if (cplayer.state.isDragging) return;
     cancelAnimationFrame(cplayer.state.rafId);
     cplayer.state.rafId = requestAnimationFrame(updateProgressUI);
 
+    const path = cplayer.state.currentPath;
+    if (!path) return;
+
     // Save resume position throttled (tiap 5 detik)
-    if (Math.floor(v.currentTime) % 5 === 0 && cplayer.state.currentPath) {
-      localStorage.setItem('cp_pos_' + cplayer.state.currentPath,
-        effectiveCurrentTime());
+    const cur = effectiveCurrentTime();
+    if (Math.floor(v.currentTime) % 5 === 0) {
+      localStorage.setItem('cp_pos_' + path, cur);
+    }
+
+    // Server sync tiap 10 detik
+    const nowMs = Date.now();
+    if (nowMs - lastSyncTime > 10000) {
+      lastSyncTime = nowMs;
+      fetch('/api/history/update', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          path,
+          position_sec: cur,
+          duration_sec: effectiveDuration() || 0,
+        }),
+      }).catch(() => { /* sync best-effort */ });
     }
   });
+
+  // syncHistoryNow: flush posisi ke server segera (saat pause/ended/close)
+  function syncHistoryNow() {
+    const path = cplayer.state.currentPath;
+    if (!path) return;
+    const body = JSON.stringify({
+      path,
+      position_sec: effectiveCurrentTime(),
+      duration_sec: effectiveDuration() || 0,
+    });
+    if (navigator.sendBeacon) {
+      navigator.sendBeacon('/api/history/update', body);
+    } else {
+      fetch('/api/history/update', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body,
+        keepalive: true,
+      }).catch(() => {});
+    }
+  }
+  // Expose ke app.js
+  window.syncHistoryNow = syncHistoryNow;
 
   v.addEventListener('progress', updateBufferedUI);
 
@@ -154,9 +212,11 @@ function setupVideoEvents() {
     setPlayIcon(true);
     if (cplayer.dom.centerPlay) cplayer.dom.centerPlay.classList.remove('hidden');
     showControls();
+    syncHistoryNow();
   });
 
   v.addEventListener('ended', () => {
+    syncHistoryNow();
     // Hapus saved position kalau sudah selesai
     if (cplayer.state.currentPath) {
       localStorage.removeItem('cp_pos_' + cplayer.state.currentPath);
@@ -605,16 +665,25 @@ async function setupSubtitle(item, filePathFn) {
     const res = await fetch('/api/subtitles?path=' + encodeURIComponent(path));
     const subs = await res.json();
     if (Array.isArray(subs) && subs.length > 0) {
-      // Simpan semua field termasuk source dan track untuk embedded
+      // Simpan semua field termasuk source, track, dan image untuk embedded
       cplayer.state.availableSubs = subs;
-      // Pilih default: prioritaskan 'id' external, lalu 'en', lalu yang pertama
+
+      // Pilih default: prioritaskan text-based 'id' external, lalu 'en', lalu yang pertama text-based
+      // Jangan auto-aktifkan PGS/image-based — terlalu berat dan butuh reload video
+      const textBased = subs.filter(s => !s.image);
       const preferred =
-        subs.find(s => s.lang === 'id' && s.source === 'external') ||
-        subs.find(s => s.lang === 'en' && s.source === 'external') ||
-        subs.find(s => s.lang === 'id') ||
-        subs.find(s => s.lang === 'en') ||
-        subs[0];
-      switchSubtitleEntry(preferred);
+        textBased.find(s => s.lang === 'id' && s.source === 'external') ||
+        textBased.find(s => s.lang === 'en' && s.source === 'external') ||
+        textBased.find(s => s.lang === 'id') ||
+        textBased.find(s => s.lang === 'en') ||
+        textBased[0];
+
+      if (preferred) {
+        switchSubtitleEntry(preferred);
+      } else if (subs.some(s => s.image)) {
+        // Hanya ada PGS — kasih hint, jangan auto-burn (mahal)
+        showToastFromPlayer('💬 Subtitle tersedia (image-based). Aktifkan dari menu CC.');
+      }
     }
   } catch {
     // Fallback ke single subtitle (lama)
@@ -635,7 +704,7 @@ function switchSubtitle(lang) {
 }
 
 // switchSubtitleEntry menangani pemilihan subtitle berdasarkan entry lengkap
-// (termasuk field source dan track untuk embedded subtitle).
+// (termasuk field source, track, dan image untuk embedded subtitle).
 function switchSubtitleEntry(entry) {
   if (!cplayer.video || !cplayer.state.currentItem) return;
 
@@ -643,17 +712,33 @@ function switchSubtitleEntry(entry) {
   cplayer.video.querySelectorAll('track').forEach(t => t.remove());
 
   const path = cplayer.state.currentPath;
-  let url;
 
-  if (entry.source === 'embedded' && entry.track !== undefined) {
-    // Subtitle embedded: pakai endpoint khusus dengan track index
-    url = '/api/embedded-subtitle?path=' + encodeURIComponent(path) +
-          '&track=' + encodeURIComponent(entry.track);
-  } else {
-    // Subtitle eksternal: pakai endpoint lama
-    url = '/api/subtitle?path=' + encodeURIComponent(path) +
-          (entry.lang ? '&lang=' + encodeURIComponent(entry.lang) : '');
+  // KASUS BARU: subtitle image-based (PGS, VobSub) → butuh burn-in via transcode
+  if (entry.image && entry.track !== undefined) {
+    showToastFromPlayer('🎨 Memuat ulang dengan subtitle ditanam ke video...');
+    const curPos = effectiveCurrentTime();
+    const params = new URLSearchParams({ path, t: Math.max(0, Math.floor(curPos)), burnSub: entry.track });
+    const url = '/api/transcode?' + params.toString();
+
+    cplayer.state.transcodeOffset = Math.max(0, Math.floor(curPos));
+    cplayer.state.isTranscoded = true;
+    cplayer.state.currentLang = entry.lang || '';
+    cplayer.state.ccEnabled = true;
+
+    const v = cplayer.video;
+    const wasPaused = v.paused;
+    v.src = url;
+    v.load();
+    if (!wasPaused) {
+      v.addEventListener('canplay', () => v.play().catch(() => {}), { once: true });
+    }
+    return;
   }
+
+  // KASUS NORMAL: subtitle text-based (external .srt/.vtt atau embedded ASS/SRT).
+  // Endpoint /api/subtitle handle keduanya — embedded pakai lang="embed:N".
+  const url = '/api/subtitle?path=' + encodeURIComponent(path) +
+              (entry.lang ? '&lang=' + encodeURIComponent(entry.lang) : '');
 
   const track = document.createElement('track');
   track.kind = 'subtitles';

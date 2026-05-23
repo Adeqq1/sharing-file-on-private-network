@@ -7,6 +7,7 @@ import (
 	"io"
 	"lan-server/internal/embed"
 	"lan-server/internal/files"
+	"lan-server/internal/history"
 	"lan-server/internal/live"
 	"lan-server/internal/media"
 	"lan-server/internal/subtitle"
@@ -315,6 +316,7 @@ func HandleSubtitles(cfg *Config) http.HandlerFunc {
 			Label  string `json:"label"`
 			Source string `json:"source"`          // "external" atau "embedded"
 			Track  int    `json:"track,omitempty"` // index stream (hanya untuk embedded)
+			Image  bool   `json:"image,omitempty"` // true untuk PGS dll → butuh burn-in
 		}
 		var results []subInfo
 
@@ -331,7 +333,7 @@ func HandleSubtitles(cfg *Config) http.HandlerFunc {
 			if lang != "" {
 				label = langLabel(lang)
 			}
-			results = append(results, subInfo{Lang: lang, Label: label})
+			results = append(results, subInfo{Lang: lang, Label: label, Source: "external"})
 		}
 
 		// 2. Scan embedded subtitle stream (MKV, MP4, MOV, WebM)
@@ -364,11 +366,19 @@ func HandleSubtitles(cfg *Config) http.HandlerFunc {
 						}
 						label += " (Embedded)"
 
+						// Untuk PGS/image-based, tambah keterangan burn-in
+						if t.Image {
+							label += " — perlu burn-in"
+						}
+
 						// Pakai prefix "embed:<index>" sebagai lang key
 						// Frontend kirim kembali nilai ini ke /api/subtitle?lang=embed:N
 						results = append(results, subInfo{
-							Lang:  fmt.Sprintf("embed:%d", t.Index),
-							Label: label,
+							Lang:   fmt.Sprintf("embed:%d", t.Index),
+							Label:  label,
+							Source: "embedded",
+							Track:  t.Index,
+							Image:  t.Image,
 						})
 					}
 				}
@@ -476,7 +486,15 @@ func HandleTranscode(cfg *Config) http.HandlerFunc {
 		}
 
 		// Kalau tidak butuh transcode → redirect ke /api/stream yang lebih efisien
-		if !transcode.NeedsTranscode(probe) {
+		// Tapi: kalau burnSubIndex >= 0, JANGAN redirect — harus transcode untuk overlay subtitle.
+		burnSubIndex := -1
+		if bs := strings.TrimSpace(r.URL.Query().Get("burnSub")); bs != "" {
+			if v, err := strconv.Atoi(bs); err == nil && v >= 0 {
+				burnSubIndex = v
+			}
+		}
+
+		if !transcode.NeedsTranscode(probe) && burnSubIndex < 0 {
 			redirectURL := "/api/stream?path=" + url.QueryEscape(relPath)
 			if tStr := strings.TrimSpace(r.URL.Query().Get("t")); tStr != "" {
 				redirectURL += "&t=" + url.QueryEscape(tStr)
@@ -514,7 +532,7 @@ func HandleTranscode(cfg *Config) http.HandlerFunc {
 			return
 		}
 
-		if err := transcode.Stream(r.Context(), target, probe, startSec, w); err != nil {
+		if err := transcode.Stream(r.Context(), target, probe, startSec, burnSubIndex, w); err != nil {
 			// Error setelah header dikirim tidak bisa dikembalikan sebagai HTTP error
 			// Cukup log — client akan melihat koneksi terputus
 			return
@@ -661,6 +679,107 @@ func HandleLogin(pinEnabled bool) http.HandlerFunc {
 			HttpOnly: true,
 			SameSite: http.SameSiteLaxMode,
 		})
+		writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+	}
+}
+
+// HandleTranscodeStatus menangani GET /api/transcode/status
+// Mengembalikan jumlah transcode aktif dan apakah slot tersedia.
+func HandleTranscodeStatus() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+			return
+		}
+		active := transcode.ActiveTranscodes()
+		max := transcode.MaxTranscodes()
+		w.Header().Set("Cache-Control", "no-cache")
+		writeJSON(w, http.StatusOK, map[string]any{
+			"active":    active,
+			"max":       max,
+			"available": active < max,
+		})
+	}
+}
+
+// HandleHistoryList menangani GET /api/history
+func HandleHistoryList(store *history.Store) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+			return
+		}
+		w.Header().Set("Cache-Control", "no-cache")
+		writeJSON(w, http.StatusOK, store.List())
+	}
+}
+
+// HandleHistoryUpdate menangani POST /api/history/update
+// Body: { path, position_sec, duration_sec }
+func HandleHistoryUpdate(cfg *Config, store *history.Store) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+			return
+		}
+		var body struct {
+			Path        string  `json:"path"`
+			PositionSec float64 `json:"position_sec"`
+			DurationSec float64 `json:"duration_sec"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "body invalid"})
+			return
+		}
+		if body.Path == "" || body.PositionSec < 0 {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "path & position_sec wajib"})
+			return
+		}
+		// Validasi path harus di dalam shared_folder
+		if _, err := files.ResolveSafe(cfg.SharedFolder, body.Path); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "path tidak valid"})
+			return
+		}
+		name := filepath.Base(body.Path)
+		if err := store.Set(body.Path, name, body.PositionSec, body.DurationSec); err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+	}
+}
+
+// HandleHistoryDelete menangani DELETE /api/history/delete?path=<rel>
+func HandleHistoryDelete(store *history.Store) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodDelete {
+			writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+			return
+		}
+		path := r.URL.Query().Get("path")
+		if path == "" {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "path wajib"})
+			return
+		}
+		if err := store.Delete(path); err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+	}
+}
+
+// HandleHistoryClear menangani POST /api/history/clear
+func HandleHistoryClear(store *history.Store) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+			return
+		}
+		if err := store.Clear(); err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+			return
+		}
 		writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 	}
 }

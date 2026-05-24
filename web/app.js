@@ -70,6 +70,7 @@ function switchTab(tabName) {
     if (btn) btn.style.display = tabName === 'home' ? '' : 'none';
   });
   if (tabName === 'live' && typeof initLiveTab === 'function') initLiveTab();
+  if (tabName === 'history') renderHistory();
 }
 
 document.querySelectorAll('[data-tab]').forEach(el => {
@@ -167,6 +168,9 @@ async function loadFiles(relPath = '') {
   searchInput.value = '';
   showSkeleton();
 
+  // Fetch history dan files secara paralel
+  await loadHistoryCache();
+
   try {
     const res = await apiFetch('/api/files?path=' + encodeURIComponent(relPath));
     const data = await res.json();
@@ -213,24 +217,57 @@ function renderFiles(items) {
       ? `<span class="stream-badge">${item.streamable === 'video' ? '▶ Video' : '♪ Audio'}</span>`
       : (item.native_play ? `<span class="native-badge">⬇ Download</span>` : '');
 
+    // Progress bar untuk video yang ada di history
+    const fullPath = state.currentPath ? state.currentPath + '/' + item.name : item.name;
+    const histEntry = watchHistoryByPath[fullPath];
+    let progressHTML = '';
+    if (histEntry && histEntry.duration_sec > 0 && !histEntry.completed) {
+      const pct = Math.min(100, (histEntry.position_sec / histEntry.duration_sec) * 100);
+      progressHTML = `<div class="watch-progress"><div class="watch-progress-fill" style="width:${pct.toFixed(1)}%"></div></div>`;
+    }
+
     li.innerHTML = `
       <span class="file-icon" aria-hidden="true">${getIcon(item)}</span>
       <div class="file-info">
         <div class="file-name">${escapeHtml(item.name)}${streamBadge}</div>
         <div class="file-meta">${escapeHtml(meta)}</div>
+        ${progressHTML}
       </div>
       <span class="file-arrow" aria-hidden="true">${item.is_dir ? '›' : '⋯'}</span>
     `;
 
     li.addEventListener('click', () => {
       if (item.is_dir) {
-        // Masuk folder
         loadFiles(state.currentPath ? state.currentPath + '/' + item.name : item.name);
-      } else if (item.streamable) {
-        // Video/audio yang bisa diputar (native atau via transcode) → buka custom player
+        return;
+      }
+      if (item.streamable) {
+        // Pre-flight checks untuk video transcode: warning HEVC + cek antrian.
+        // Dijalankan PARALEL dengan openPlayer (tidak await) agar tidak ada delay tap.
+        if (item.needs_transcode && item.streamable === 'video') {
+          // Cek antrian transcode (fire-and-forget)
+          fetch('/api/transcode/status').then(r => r.ok ? r.json() : null).then(status => {
+            if (status && !status.available) {
+              showToast('⏳ Server sibuk transcode video lain. Tunggu beberapa detik...');
+            }
+          }).catch(() => {});
+
+          // Warning HEVC (sekali per session, fire-and-forget)
+          if (!sessionStorage.getItem('cp_hevcWarned')) {
+            fetch('/api/probe?path=' + encodeURIComponent(filePathOf(item)))
+              .then(r => r.ok ? r.json() : null)
+              .then(probe => {
+                if (!probe) return;
+                const vc = (probe.streams || []).find(s => s.type === 'video');
+                if (vc && (vc.codec === 'hevc' || vc.codec === 'h265' || vc.codec === 'av1')) {
+                  sessionStorage.setItem('cp_hevcWarned', '1');
+                  showToast('🎬 Codec ' + vc.codec.toUpperCase() + ' terdeteksi. Transcode butuh CPU besar.');
+                }
+              }).catch(() => {});
+          }
+        }
         openPlayer(item);
       } else {
-        // File biasa (PDF, ZIP, gambar, dll) → download langsung
         downloadFile(item);
         showToast('⬇ Mendownload "' + item.name + '"');
       }
@@ -359,8 +396,31 @@ function openPlayer(item) {
 
     playerVideo.addEventListener('canplay', () => {
       playerSpinner.classList.add('hidden');
+      // Hapus pesan slow-transcode kalau ada
+      const spinnerEl = $('player-spinner');
+      if (spinnerEl) {
+        const msg = spinnerEl.querySelector('.spinner-msg');
+        if (msg) msg.remove();
+      }
       playerVideo.play().catch(() => {});
     }, { once: true, signal: sig });
+
+    // Untuk HEVC/transcode, tampilkan pesan informatif di spinner setelah 5 detik
+    // agar user tahu ini normal, bukan hang.
+    if (item.needs_transcode) {
+      const slowTranscodeTimer = setTimeout(() => {
+        const spinnerEl = $('player-spinner');
+        if (spinnerEl && !spinnerEl.classList.contains('hidden') && !spinnerEl.querySelector('.spinner-msg')) {
+          const msg = document.createElement('p');
+          msg.className = 'spinner-msg';
+          msg.textContent = 'Memproses video... (HEVC/transcode bisa 10–30 detik)';
+          msg.style.cssText = 'color:#fff;font-size:.8rem;margin-top:8px;text-align:center;opacity:.8;padding:0 16px';
+          spinnerEl.appendChild(msg);
+        }
+      }, 5000);
+      // Bersihkan timer kalau player ditutup sebelum 5 detik
+      playerAbort.signal.addEventListener('abort', () => clearTimeout(slowTranscodeTimer));
+    }
 
     playerVideo.addEventListener('error', () => {
       playerSpinner.classList.add('hidden');
@@ -436,6 +496,9 @@ function pickStreamURL(item) {
 }
 
 function closePlayer() {
+  // Sync history sebelum tutup player
+  if (typeof syncHistoryNow === 'function') syncHistoryNow();
+
   playerAbort.abort();
   playerAbort = new AbortController();
   const playerVideo = $('player-video');
@@ -447,7 +510,12 @@ function closePlayer() {
   if (typeof resetCplayer === 'function') resetCplayer();
   playerOverlay.classList.add('hidden');
   document.body.style.overflow = '';
-  state.currentPlayerItem = null; // clear agar tombol download tidak referensi item lama
+  state.currentPlayerItem = null;
+
+  // Refresh history cache dan re-render file list agar progress bar up-to-date
+  loadHistoryCache().then(() => {
+    if (state.allItems.length > 0) renderFiles(state.allItems);
+  });
 }
 
 // ===== Download =====
@@ -461,35 +529,126 @@ function downloadFile(item) {
 }
 
 // ===== Upload =====
-async function uploadFiles(files, targetPath) {
-  let successCount = 0;
-  let failCount = 0;
-  for (const file of files) {
+const uploadProgressContainer = $('upload-progress-container');
+
+// formatSpeed: bytes/detik → string human-readable.
+function formatSpeed(bps) {
+  if (bps < 1024) return `${bps.toFixed(0)} B/s`;
+  if (bps < 1024 * 1024) return `${(bps / 1024).toFixed(1)} KB/s`;
+  return `${(bps / 1024 / 1024).toFixed(1)} MB/s`;
+}
+
+// formatBytes: bytes → string human-readable.
+function formatBytes(b) {
+  if (b < 1024) return `${b} B`;
+  if (b < 1024 * 1024) return `${(b / 1024).toFixed(1)} KB`;
+  if (b < 1024 * 1024 * 1024) return `${(b / 1024 / 1024).toFixed(1)} MB`;
+  return `${(b / 1024 / 1024 / 1024).toFixed(2)} GB`;
+}
+
+// createUploadItem membuat 1 baris UI progress dan return helper functions.
+function createUploadItem(file) {
+  uploadProgressContainer.classList.remove('hidden');
+  const el = document.createElement('div');
+  el.className = 'upload-item';
+  el.innerHTML = `
+    <div class="upload-item-header">
+      <span class="upload-item-name" title="${escapeHtml(file.name)}">${escapeHtml(file.name)}</span>
+      <button class="upload-item-cancel" title="Batalkan">✕</button>
+    </div>
+    <div class="upload-item-bar"><div class="upload-item-bar-fill" style="width:0%"></div></div>
+    <div class="upload-item-meta"><span class="upload-item-status">Menunggu...</span><span class="upload-item-size">${formatBytes(file.size)}</span></div>
+  `;
+  uploadProgressContainer.appendChild(el);
+  const fill      = el.querySelector('.upload-item-bar-fill');
+  const status    = el.querySelector('.upload-item-status');
+  const cancelBtn = el.querySelector('.upload-item-cancel');
+  return {
+    el,
+    setProgress(loaded, speed) {
+      const pct = file.size > 0 ? (loaded / file.size) * 100 : 0;
+      fill.style.width = `${pct.toFixed(1)}%`;
+      status.textContent = `${pct.toFixed(0)}% • ${formatSpeed(speed)}`;
+    },
+    setSuccess(name) {
+      el.classList.add('success');
+      fill.style.width = '100%';
+      status.textContent = `✓ ${name}`;
+      cancelBtn.style.display = 'none';
+      setTimeout(() => {
+        el.remove();
+        if (uploadProgressContainer.children.length === 0) {
+          uploadProgressContainer.classList.add('hidden');
+        }
+      }, 4000);
+    },
+    setError(msg) {
+      el.classList.add('error');
+      status.textContent = `✗ ${msg}`;
+    },
+    onCancel(fn) { cancelBtn.addEventListener('click', fn); },
+  };
+}
+
+// uploadOne mengirim satu file dengan XHR agar dapat progress event.
+function uploadOne(file, targetPath) {
+  return new Promise((resolve) => {
+    const ui = createUploadItem(file);
+    const xhr = new XMLHttpRequest();
     const formData = new FormData();
     formData.append('file', file);
-    try {
-      const res = await apiFetch(
-        '/api/upload?path=' + encodeURIComponent(targetPath),
-        { method: 'POST', body: formData }
-      );
-      if (res.status === 413) {
-        showToast(`❌ "${file.name}" terlalu besar (maks 200 MB)`, true);
-        failCount++;
-        continue;
+
+    const startTime = Date.now();
+    xhr.upload.addEventListener('progress', (e) => {
+      if (!e.lengthComputable) return;
+      const elapsed = (Date.now() - startTime) / 1000;
+      const speed = elapsed > 0 ? e.loaded / elapsed : 0;
+      ui.setProgress(e.loaded, speed);
+    });
+
+    xhr.addEventListener('load', () => {
+      try {
+        const data = JSON.parse(xhr.responseText);
+        const r = (data.results && data.results[0]) || {};
+        if (xhr.status >= 200 && xhr.status < 300 && r.ok) {
+          ui.setSuccess(r.name || file.name);
+          resolve({ ok: true });
+        } else {
+          ui.setError(r.error || `HTTP ${xhr.status}`);
+          resolve({ ok: false });
+        }
+      } catch {
+        ui.setError(`HTTP ${xhr.status}`);
+        resolve({ ok: false });
       }
-      const data = await res.json();
-      if (data.ok) {
-        successCount++;
-      } else {
-        showToast(`❌ Gagal upload "${file.name}": ${data.error || 'error tidak diketahui'}`, true);
-        failCount++;
-      }
-    } catch {
-      failCount++;
+    });
+    xhr.addEventListener('error', () => { ui.setError('Koneksi error'); resolve({ ok: false }); });
+    xhr.addEventListener('abort', () => { ui.setError('Dibatalkan'); resolve({ ok: false }); });
+    ui.onCancel(() => xhr.abort());
+
+    xhr.open('POST', '/api/upload?path=' + encodeURIComponent(targetPath));
+    xhr.send(formData);
+  });
+}
+
+async function uploadFiles(files, targetPath) {
+  // Concurrency 3 — jangan terlalu banyak agar tidak saturate LAN.
+  const queue = Array.from(files);
+  const concurrency = 3;
+  let success = 0;
+  let fail = 0;
+
+  async function worker() {
+    while (queue.length > 0) {
+      const file = queue.shift();
+      const r = await uploadOne(file, targetPath);
+      if (r.ok) success++; else fail++;
     }
   }
-  if (successCount > 0) showToast(`✅ ${successCount} file berhasil diupload`);
-  if (failCount > 0) showToast(`❌ ${failCount} file gagal diupload`, true);
+  await Promise.all(Array.from({ length: Math.min(concurrency, files.length) }, worker));
+
+  if (success > 0) showToast(`✅ ${success} file berhasil diupload`);
+  if (fail > 0) showToast(`❌ ${fail} file gagal`, true);
   loadFiles(state.currentPath);
 }
 
@@ -644,6 +803,30 @@ $('player-error-download').addEventListener('click', () => {
   }
 });
 
+// Player: tombol salin link untuk VLC / MX Player
+$('player-error-native').addEventListener('click', () => {
+  if (!state.currentPlayerItem) return;
+  const url = location.origin + '/api/stream?path=' + encodeURIComponent(filePathOf(state.currentPlayerItem));
+  copyToClipboard(url);
+  showToast('🔗 Link disalin. Buka VLC → Stream → paste link.');
+});
+
+function copyToClipboard(text) {
+  if (navigator.clipboard && location.protocol === 'https:') {
+    navigator.clipboard.writeText(text).catch(() => {});
+    return;
+  }
+  // Fallback untuk HTTP (LAN biasanya non-HTTPS)
+  const ta = document.createElement('textarea');
+  ta.value = text;
+  ta.style.position = 'fixed';
+  ta.style.opacity = '0';
+  document.body.appendChild(ta);
+  ta.select();
+  try { document.execCommand('copy'); } catch (_) {}
+  document.body.removeChild(ta);
+}
+
 // Player: PiP
 playerPip.addEventListener('click', async () => {
   const playerVideo = $('player-video');
@@ -682,6 +865,141 @@ document.querySelectorAll('.pin-digit').forEach((input, idx, all) => {
 });
 $('btn-login').addEventListener('click', submitPIN);
 
+// ===== Watch History =====
+
+let watchHistoryByPath = {}; // cache: { "<rel-path>": Entry }
+
+async function loadHistoryCache() {
+  try {
+    const res = await fetch('/api/history');
+    if (!res.ok) { watchHistoryByPath = {}; return; }
+    const list = await res.json();
+    watchHistoryByPath = {};
+    for (const e of (list || [])) {
+      watchHistoryByPath[e.path] = e;
+    }
+  } catch (_) {
+    watchHistoryByPath = {};
+  }
+}
+
+async function renderHistory() {
+  const ul = $('history-list');
+  const emptyEl = $('history-empty');
+  if (!ul) return;
+  ul.innerHTML = '';
+  await loadHistoryCache();
+  const list = Object.values(watchHistoryByPath).sort((a, b) =>
+    new Date(b.watched_at) - new Date(a.watched_at)
+  );
+  if (list.length === 0) {
+    emptyEl.classList.remove('hidden');
+    return;
+  }
+  emptyEl.classList.add('hidden');
+  const frag = document.createDocumentFragment();
+  for (const e of list) {
+    const li = document.createElement('li');
+    li.className = 'file-item';
+    const pct = e.duration_sec > 0
+      ? Math.min(100, (e.position_sec / e.duration_sec) * 100)
+      : 0;
+    const remainSec = Math.max(0, e.duration_sec - e.position_sec);
+    const meta = e.completed
+      ? '✓ Selesai'
+      : `⏱ ${formatTimeShort(e.position_sec)} / ${formatTimeShort(e.duration_sec)} · sisa ${formatTimeShort(remainSec)}`;
+    li.innerHTML = `
+      <span class="file-icon" aria-hidden="true">🎬</span>
+      <div class="file-info">
+        <div class="file-name">${escapeHtml(e.name)}</div>
+        <div class="file-meta">${escapeHtml(e.path)}</div>
+        <div class="file-meta">${meta}</div>
+        <div class="watch-progress"><div class="watch-progress-fill" style="width:${pct.toFixed(1)}%"></div></div>
+      </div>
+      <button class="icon-btn history-delete-btn" data-path="${escapeHtml(e.path)}" title="Hapus dari riwayat" aria-label="Hapus dari riwayat">✕</button>
+    `;
+    li.addEventListener('click', (ev) => {
+      if (ev.target.closest('.history-delete-btn')) return;
+      openPlayerFromHistory(e);
+    });
+    li.querySelector('.history-delete-btn').addEventListener('click', async (ev) => {
+      ev.stopPropagation();
+      if (!confirm('Hapus "' + e.name + '" dari riwayat?')) return;
+      await fetch('/api/history/delete?path=' + encodeURIComponent(e.path), { method: 'DELETE' });
+      renderHistory();
+    });
+    frag.appendChild(li);
+  }
+  ul.appendChild(frag);
+}
+
+function formatTimeShort(sec) {
+  if (!isFinite(sec) || sec < 0) sec = 0;
+  const m = Math.floor(sec / 60);
+  const s = Math.floor(sec % 60).toString().padStart(2, '0');
+  if (m >= 60) {
+    const h = Math.floor(m / 60);
+    const mm = (m % 60).toString().padStart(2, '0');
+    return `${h}:${mm}:${s}`;
+  }
+  return `${m}:${s}`;
+}
+
+// openPlayerFromHistory: buka player dari entry history tanpa item lengkap dari API.
+async function openPlayerFromHistory(entry) {
+  const ext = (entry.path.split('.').pop() || '').toLowerCase();
+  const fakeItem = {
+    name: entry.name,
+    is_dir: false,
+    ext,
+    streamable: 'video',
+    needs_transcode: ['mkv', 'avi', 'wmv', 'flv', 'ts'].includes(ext),
+    has_subtitle: false,
+  };
+  // Navigate ke folder dulu agar state.allItems, breadcrumb, dan currentPath benar.
+  // Ini juga memastikan queue (prev/next) terisi dengan file di folder yang sama.
+  const slash = entry.path.lastIndexOf('/');
+  const dir = slash >= 0 ? entry.path.slice(0, slash) : '';
+  await loadFiles(dir);
+  openPlayer(fakeItem);
+}
+
 // ===== Init =====
 if (typeof initCplayer === 'function') initCplayer();
 checkAuth();
+
+// History clear button
+const btnHistoryClear = $('btn-history-clear');
+if (btnHistoryClear) {
+  btnHistoryClear.addEventListener('click', async () => {
+    if (!confirm('Hapus semua riwayat tontonan?')) return;
+    await fetch('/api/history/clear', { method: 'POST' });
+    renderHistory();
+  });
+}
+
+// ===== Drag & Drop Upload =====
+const dropOverlay = $('dropzone-overlay');
+let dragCounter = 0;
+
+window.addEventListener('dragenter', (e) => {
+  if (activeTab !== 'home') return;
+  if (!e.dataTransfer || !e.dataTransfer.types.includes('Files')) return;
+  dragCounter++;
+  if (dropOverlay) dropOverlay.classList.remove('hidden');
+});
+window.addEventListener('dragleave', () => {
+  dragCounter = Math.max(0, dragCounter - 1);
+  if (dragCounter === 0 && dropOverlay) dropOverlay.classList.add('hidden');
+});
+window.addEventListener('dragover', (e) => {
+  if (e.dataTransfer && e.dataTransfer.types.includes('Files')) e.preventDefault();
+});
+window.addEventListener('drop', (e) => {
+  e.preventDefault();
+  dragCounter = 0;
+  if (dropOverlay) dropOverlay.classList.add('hidden');
+  if (activeTab !== 'home') return;
+  const files = e.dataTransfer && e.dataTransfer.files;
+  if (files && files.length > 0) uploadFiles(files, state.currentPath);
+});

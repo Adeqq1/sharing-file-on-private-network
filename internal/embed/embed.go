@@ -17,6 +17,7 @@ type Track struct {
 	Title   string `json:"title"`   // judul track dari metadata — bisa kosong
 	Default bool   `json:"default"` // true kalau disposition.default == 1
 	Forced  bool   `json:"forced"`  // true kalau disposition.forced == 1
+	Image   bool   `json:"image"`   // true untuk PGS, VobSub, dll — butuh burn-in, tidak bisa WebVTT
 }
 
 // IsTextBased mengembalikan true kalau codec subtitle adalah text-based
@@ -25,6 +26,16 @@ type Track struct {
 func (t Track) IsTextBased() bool {
 	switch strings.ToLower(t.Codec) {
 	case "subrip", "ass", "ssa", "mov_text", "webvtt", "text":
+		return true
+	}
+	return false
+}
+
+// IsImageBased mengembalikan true untuk codec subtitle berbasis gambar
+// yang tidak bisa dikonversi ke WebVTT — butuh burn-in via ffmpeg filter.
+func (t Track) IsImageBased() bool {
+	switch strings.ToLower(t.Codec) {
+	case "hdmv_pgs_subtitle", "pgssub", "dvd_subtitle", "dvb_subtitle", "dvbsub", "vobsub", "xsub":
 		return true
 	}
 	return false
@@ -80,7 +91,13 @@ func Probe(ctx context.Context, ffprobePath, videoPath string) ([]Track, error) 
 			Default: s.Disp["default"] == 1,
 			Forced:  s.Disp["forced"] == 1,
 		}
-		// Hanya include text-based codec
+		if t.IsImageBased() {
+			// Include image-based dengan flag Image=true — frontend akan pakai burn-in
+			t.Image = true
+			tracks = append(tracks, t)
+			continue
+		}
+		// Hanya include text-based codec yang dikenal
 		if !t.IsTextBased() {
 			continue
 		}

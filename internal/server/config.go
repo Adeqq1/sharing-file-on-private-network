@@ -10,10 +10,11 @@ import (
 
 // Config adalah struktur konfigurasi utama yang dibaca dari config.json.
 type Config struct {
-	SharedFolder string `json:"shared_folder"`
-	Port         int    `json:"port"`
-	PINEnabled   bool   `json:"pin_enabled"`
-	FFmpegPath   string `json:"ffmpeg_path"` // path ke executable ffmpeg, kosong = auto-detect
+	SharedFolder   string `json:"shared_folder"`
+	Port           int    `json:"port"`
+	PINEnabled     bool   `json:"pin_enabled"`
+	FFmpegPath     string `json:"ffmpeg_path"`      // path ke executable ffmpeg, kosong = auto-detect
+	UploadMaxBytes int64  `json:"upload_max_bytes"` // batas ukuran per file upload (bytes), default 5 GB
 }
 
 // LoadConfig membaca config.json dari path yang diberikan.
@@ -28,6 +29,9 @@ func LoadConfig(path string) (*Config, error) {
 	}
 	if cfg.Port == 0 {
 		cfg.Port = 8080
+	}
+	if cfg.UploadMaxBytes <= 0 {
+		cfg.UploadMaxBytes = 5 << 30 // 5 GB
 	}
 	if err := cfg.Validate(); err != nil {
 		return nil, fmt.Errorf("config tidak valid: %w", err)

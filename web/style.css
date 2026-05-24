@@ -745,3 +745,153 @@ body.cp-rotated-active {
 }
 .settings-item-label { font-size: .95rem; }
 .settings-item-desc { font-size: .78rem; color: var(--text-muted); margin-top: 2px; }
+
+/* ===== Watch Progress Bar (file list) ===== */
+.watch-progress {
+  height: 3px;
+  background: var(--border, #e2e8f0);
+  border-radius: 2px;
+  margin-top: 5px;
+  overflow: hidden;
+}
+.watch-progress-fill {
+  height: 100%;
+  background: var(--accent, #2563eb);
+  border-radius: 2px;
+  transition: width .3s ease;
+}
+
+/* ===== History Tab ===== */
+.history-section {
+  padding: 0 0 80px;
+}
+.history-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 16px 8px;
+}
+.history-header h2 {
+  margin: 0;
+  font-size: 1.1rem;
+  font-weight: 600;
+}
+.btn-sm {
+  padding: 4px 12px;
+  font-size: .8rem;
+}
+.history-delete-btn {
+  flex-shrink: 0;
+  color: var(--text-muted);
+  font-size: 1rem;
+  padding: 4px 8px;
+  border-radius: var(--radius-sm);
+  transition: color var(--transition), background var(--transition);
+}
+.history-delete-btn:hover {
+  color: var(--danger, #ef4444);
+  background: rgba(239,68,68,.08);
+}
+
+/* ===== Upload Progress ===== */
+.upload-progress-container {
+  position: fixed;
+  bottom: calc(var(--bottom-nav-h, 64px) + 12px);
+  right: 12px;
+  width: min(360px, calc(100vw - 24px));
+  max-height: 50vh;
+  overflow-y: auto;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 12px;
+  z-index: 100;
+  box-shadow: 0 8px 24px rgba(0,0,0,.2);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+@media (min-width: 768px) {
+  .upload-progress-container { bottom: 24px; }
+}
+.upload-item {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px;
+  border-radius: 8px;
+  background: var(--bg);
+}
+.upload-item-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.85rem;
+}
+.upload-item-name {
+  flex: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.upload-item-cancel {
+  background: transparent;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  padding: 2px 6px;
+  font-size: 1rem;
+  border-radius: 4px;
+  line-height: 1;
+  flex-shrink: 0;
+}
+.upload-item-cancel:hover { color: var(--danger); }
+.upload-item-bar {
+  position: relative;
+  height: 4px;
+  background: var(--border);
+  border-radius: 2px;
+  overflow: hidden;
+}
+.upload-item-bar-fill {
+  position: absolute;
+  inset: 0 auto 0 0;
+  background: var(--primary);
+  transition: width .15s linear;
+  border-radius: 2px;
+}
+.upload-item-meta {
+  display: flex;
+  justify-content: space-between;
+  font-size: 0.75rem;
+  color: var(--text-muted);
+}
+.upload-item.success .upload-item-bar-fill { background: var(--success); }
+.upload-item.error   .upload-item-bar-fill { background: var(--danger); }
+
+/* ===== Drag & Drop Overlay ===== */
+.dropzone-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(37,99,235,.12);
+  border: 4px dashed var(--primary);
+  z-index: 200;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+}
+.dropzone-inner {
+  background: var(--surface);
+  padding: 24px 32px;
+  border-radius: 12px;
+  text-align: center;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  box-shadow: var(--shadow-lg);
+}
+.dropzone-icon { font-size: 2.5rem; }
+.dropzone-text { font-size: 1rem; font-weight: 600; color: var(--text); }

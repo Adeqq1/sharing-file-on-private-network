@@ -365,13 +365,39 @@ function openPlayer(item) {
   // effectiveDuration() sudah tahu mode transcode sebelum loadedmetadata fire.
   // Durasi total (totalDuration) diisi setelah probe balik — kalau probe lambat,
   // effectiveDuration() fallback ke video.duration native sampai probe selesai.
+  //
+  // PENTING: setTotalDuration(0, true) hanya set flag isTranscoded, TIDAK reset
+  // transcodeOffset. Ini aman karena resetCplayer() sudah dipanggil di atas
+  // yang memastikan transcodeOffset = 0 saat buka video baru.
   if (item.needs_transcode && item.streamable === 'video') {
-    if (typeof setTotalDuration === 'function') setTotalDuration(0, true); // flag dulu
+    if (typeof setTotalDuration === 'function') setTotalDuration(0, true); // set flag dulu, durasi menyusul
     fetch('/api/probe?path=' + encodeURIComponent(filePathOf(item)))
       .then(r => r.ok ? r.json() : null)
       .then(probe => {
-        if (probe && probe.duration && typeof setTotalDuration === 'function') {
-          setTotalDuration(probe.duration, true); // update dengan durasi sesungguhnya
+        if (!probe || !probe.duration) return;
+        if (typeof setTotalDuration === 'function') {
+          // Pastikan ini masih untuk video yang sama (user belum ganti video)
+          if (cplayer.state && cplayer.state.currentPath === filePathOf(item)) {
+            // Cek apakah file ini akan di-serve native (CanDirectServe di backend).
+            // Kalau codec video+audio kompatibel browser, backend akan redirect ke
+            // /api/stream (native seek, ~0% CPU). Dalam kasus ini isTranscoded = false
+            // agar seek pakai native video.currentTime, bukan reload ffmpeg.
+            //
+            // Logika ini mirror CanDirectServe() di probe.go:
+            //   - video codec: h264/avc/vp8/vp9/av1 (atau tidak ada video)
+            //   - audio codec: aac/mp3/opus/vorbis/mp2 (atau tidak ada audio)
+            const compatVideoCodecs = ['h264', 'avc', 'vp8', 'vp9', 'av1'];
+            const compatAudioCodecs = ['aac', 'mp3', 'opus', 'vorbis', 'mp2'];
+            const videoStream = (probe.streams || []).find(s => s.type === 'video');
+            const audioStream = (probe.streams || []).find(s => s.type === 'audio');
+            const videoOK = !videoStream || compatVideoCodecs.includes((videoStream.codec || '').toLowerCase());
+            const audioOK = !audioStream || compatAudioCodecs.includes((audioStream.codec || '').toLowerCase());
+            const willDirectServe = videoOK && audioOK;
+
+            // isTranscoded = false kalau akan di-serve native (seek pakai video.currentTime)
+            // isTranscoded = true kalau butuh ffmpeg (seek pakai ?t= reload)
+            setTotalDuration(probe.duration, !willDirectServe);
+          }
         }
       })
       .catch(() => { /* probe gagal — effectiveDuration() fallback ke video.duration */ });

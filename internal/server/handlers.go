@@ -513,7 +513,15 @@ func HandleTranscode(cfg *Config) http.HandlerFunc {
 		//
 		// MKV: bisa di-serve langsung di Chrome/Firefox, TAPI tidak di Safari/iOS.
 		// Jadi cek User-Agent dulu sebelum redirect.
-		if burnSubIndex < 0 && transcode.CanDirectServe(probe) {
+		//
+		// PENTING: jangan redirect kalau ada ?t= (seek offset).
+		// /api/stream pakai http.ServeFile yang mengabaikan ?t= — file selalu
+		// di-serve dari byte 0. Seek harus tetap lewat ffmpeg (-ss flag) agar
+		// video benar-benar mulai dari posisi yang diminta.
+		tStr := strings.TrimSpace(r.URL.Query().Get("t"))
+		hasSeek := tStr != "" && tStr != "0"
+
+		if !hasSeek && burnSubIndex < 0 && transcode.CanDirectServe(probe) {
 			isMKV := transcode.IsMKVContainer(probe)
 			safariOrIOS := isSafariOrIOS(r.Header.Get("User-Agent"))
 
@@ -521,11 +529,7 @@ func HandleTranscode(cfg *Config) http.HandlerFunc {
 			//   - Container bukan MKV (selalu aman: MP4/WebM/MOV), ATAU
 			//   - Container MKV TAPI client bukan Safari/iOS
 			if !isMKV || !safariOrIOS {
-				redirectURL := "/api/stream?path=" + url.QueryEscape(relPath)
-				if tStr := strings.TrimSpace(r.URL.Query().Get("t")); tStr != "" {
-					redirectURL += "&t=" + url.QueryEscape(tStr)
-				}
-				http.Redirect(w, r, redirectURL, http.StatusFound)
+				http.Redirect(w, r, "/api/stream?path="+url.QueryEscape(relPath), http.StatusFound)
 				return
 			}
 			// Safari + MKV → fall-through ke remux ffmpeg di bawah (tidak ada cara lain)

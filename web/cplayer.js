@@ -637,7 +637,11 @@ function setBrightness(b) {
 // ===== Subtitle (multi-language) — fix poin #5, #6 =====
 
 async function setupSubtitle(item, filePathFn) {
-  if (!cplayer.video) return;
+  console.log('[sub] setupSubtitle dipanggil', { name: item.name, streamable: item.streamable });
+  if (!cplayer.video) {
+    console.warn('[sub] cplayer.video null, batal');
+    return;
+  }
 
   // Hapus track lama
   cplayer.video.querySelectorAll('track').forEach(t => t.remove());
@@ -652,8 +656,11 @@ async function setupSubtitle(item, filePathFn) {
   // Fetch list subtitle dari backend (gabungan external + embedded)
   try {
     const path = filePathFn(item);
+    console.log('[sub] fetch /api/subtitles untuk', path);
     const res = await fetch('/api/subtitles?path=' + encodeURIComponent(path));
+    console.log('[sub] /api/subtitles status', res.status);
     const subs = await res.json();
+    console.log('[sub] subs found:', subs);
     if (Array.isArray(subs) && subs.length > 0) {
       // Simpan semua field termasuk source, track, dan image untuk embedded
       cplayer.state.availableSubs = subs;
@@ -661,21 +668,27 @@ async function setupSubtitle(item, filePathFn) {
       // Pilih default: prioritaskan text-based 'id' external, lalu 'en', lalu yang pertama text-based
       // Jangan auto-aktifkan PGS/image-based — terlalu berat dan butuh reload video
       const textBased = subs.filter(s => !s.image);
+      console.log('[sub] textBased count:', textBased.length, '— image-based count:', subs.length - textBased.length);
       const preferred =
         textBased.find(s => s.lang === 'id' && s.source === 'external') ||
         textBased.find(s => s.lang === 'en' && s.source === 'external') ||
         textBased.find(s => s.lang === 'id') ||
         textBased.find(s => s.lang === 'en') ||
         textBased[0];
+      console.log('[sub] preferred:', preferred);
 
       if (preferred) {
         switchSubtitleEntry(preferred);
       } else if (subs.some(s => s.image)) {
         // Hanya ada PGS — kasih hint, jangan auto-burn (mahal)
+        console.warn('[sub] hanya ada PGS, butuh burn-in manual');
         showToastFromPlayer('💬 Subtitle tersedia (image-based). Aktifkan dari menu CC.');
       }
+    } else {
+      console.warn('[sub] tidak ada subtitle untuk file ini');
     }
-  } catch {
+  } catch (err) {
+    console.error('[sub] error fetch /api/subtitles:', err);
     // Fallback ke single subtitle (lama)
     cplayer.state.availableSubs = [{ lang: '', label: 'Default', source: 'external' }];
     switchSubtitleEntry(cplayer.state.availableSubs[0]);
@@ -696,7 +709,15 @@ function switchSubtitle(lang) {
 // switchSubtitleEntry menangani pemilihan subtitle berdasarkan entry lengkap
 // (termasuk field source, track, dan image untuk embedded subtitle).
 function switchSubtitleEntry(entry) {
-  if (!cplayer.video || !cplayer.state.currentItem) return;
+  console.log('[sub] switchSubtitleEntry:', entry);
+  if (!cplayer.video) {
+    console.warn('[sub] no video, abort');
+    return;
+  }
+  if (!cplayer.state.currentItem) {
+    console.warn('[sub] no currentItem, abort');
+    return;
+  }
 
   // Hapus track lama (fix poin #6)
   cplayer.video.querySelectorAll('track').forEach(t => t.remove());
@@ -710,6 +731,7 @@ function switchSubtitleEntry(entry) {
 
   // KASUS BARU: subtitle image-based (PGS, VobSub) → butuh burn-in via transcode
   if (entry.image && entry.track !== undefined) {
+    console.log('[sub] image-based → burn-in via transcode, track:', entry.track);
     showToastFromPlayer('🎨 Memuat ulang dengan subtitle ditanam ke video...');
     const curPos = effectiveCurrentTime();
     const t = Math.max(0, Math.floor(curPos));
@@ -741,16 +763,19 @@ function switchSubtitleEntry(entry) {
   // data sudah ada di memori — browser tidak perlu fetch lagi saat mode di-set.
   const apiUrl = '/api/subtitle?path=' + encodeURIComponent(path) +
                  (entry.lang ? '&lang=' + encodeURIComponent(entry.lang) : '');
+  console.log('[sub] fetch subtitle:', apiUrl);
 
   cplayer.state.currentLang = entry.lang || '';
   cplayer.state.ccEnabled = true;
 
   fetch(apiUrl)
     .then(res => {
+      console.log('[sub] /api/subtitle status:', res.status);
       if (!res.ok) throw new Error('HTTP ' + res.status);
       return res.blob();
     })
     .then(blob => {
+      console.log('[sub] blob size:', blob.size, 'type:', blob.type);
       // Pastikan subtitle ini masih relevan (user belum ganti video/subtitle)
       if (!cplayer.video || cplayer.state.currentPath !== path) return;
 
@@ -772,9 +797,15 @@ function switchSubtitleEntry(entry) {
       // sehingga ini bekerja reliably di semua browser termasuk iOS Safari.
       const tt = cplayer.video.textTracks[cplayer.video.textTracks.length - 1];
       if (tt) tt.mode = 'showing';
+      console.log('[sub] track appended, mode:', tt && tt.mode);
+
+      // Toast konfirmasi subtitle berhasil dimuat (Tahap 6)
+      showToastFromPlayer('💬 Subtitle: ' + (entry.label || entry.lang || 'Default'));
     })
-    .catch(() => {
-      // Subtitle gagal dimuat — tidak fatal, video tetap bisa diputar
+    .catch(err => {
+      console.error('[sub] fetch subtitle gagal:', err);
+      // Toast error agar user tahu subtitle gagal (Tahap 6)
+      showToastFromPlayer('⚠ Subtitle gagal dimuat: ' + (err.message || 'error'));
     });
 }
 

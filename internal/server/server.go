@@ -7,6 +7,8 @@ import (
 	"log"
 	"mime"
 	"net/http"
+	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -88,10 +90,17 @@ func Addr(cfg *Config) string {
 }
 
 // cacheStatic menambahkan Cache-Control header pada response file statis.
+// HTML, JS, dan CSS pakai no-cache + must-revalidate agar setiap deploy fix
+// baru langsung diambil browser tanpa hard-refresh manual di tiap device
+// (terutama HP). Asset lain (gambar, font, dll) boleh di-cache 1 jam.
 func cacheStatic(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/" || r.URL.Path == "/index.html" {
-			w.Header().Set("Cache-Control", "no-cache")
+		ext := strings.ToLower(filepath.Ext(r.URL.Path))
+		if r.URL.Path == "/" || r.URL.Path == "/index.html" ||
+			ext == ".html" || ext == ".js" || ext == ".css" {
+			// no-cache: browser wajib revalidasi ke server sebelum pakai cache.
+			// must-revalidate: tidak boleh pakai stale copy saat offline.
+			w.Header().Set("Cache-Control", "no-cache, must-revalidate")
 		} else {
 			w.Header().Set("Cache-Control", "public, max-age=3600")
 		}

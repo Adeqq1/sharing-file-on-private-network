@@ -127,6 +127,42 @@ func NeedsTranscode(p *ProbeResult) bool {
 	return false
 }
 
+// CanDirectServe mengembalikan true kalau file bisa di-stream apa adanya
+// (via http.ServeFile) ke browser modern, walaupun container-nya MKV/MOV.
+//
+// Kriteria:
+//   - Codec video: H.264, VP8, VP9, AV1 (atau tidak ada video stream)
+//   - Codec audio: AAC, MP3, Opus, Vorbis (atau tidak ada audio stream)
+//   - Container: apa saja — caller yang memutuskan apakah container aman
+//     untuk browser target (mis. MKV tidak aman di Safari/iOS).
+//
+// Khusus untuk MKV: Safari iOS TIDAK support, jadi caller harus cek
+// User-Agent dan fallback ke transcode kalau Safari.
+func CanDirectServe(p *ProbeResult) bool {
+	if p == nil {
+		return false
+	}
+	// Cek codec video (boleh kosong = no video stream = OK)
+	if vc := p.VideoCodec(); vc != "" && !VideoCodecCompatible(vc) {
+		return false
+	}
+	// Cek codec audio (boleh kosong = no audio stream = OK)
+	if ac := p.AudioCodec(); ac != "" && !AudioCodecCompatible(ac) {
+		return false
+	}
+	return true
+}
+
+// IsMKVContainer mengembalikan true kalau format-nya matroska (MKV/MKA/MKS).
+// Dipakai untuk decision: MKV native-serve OK di Chrome/Firefox, tidak OK di Safari/iOS.
+// ffprobe mengembalikan "matroska,webm" untuk file MKV — kita cek substring.
+func IsMKVContainer(p *ProbeResult) bool {
+	if p == nil {
+		return false
+	}
+	return strings.Contains(strings.ToLower(p.FormatName), "matroska")
+}
+
 // isBrowserNativeContainer mengembalikan true untuk container yang semua browser
 // support secara native tanpa remux (MP4, WebM, MOV).
 // MKV/matroska TIDAK termasuk karena tidak reliable di browser mobile.

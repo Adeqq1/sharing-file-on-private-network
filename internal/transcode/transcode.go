@@ -23,6 +23,7 @@ var (
 	ffmpegPath  string
 	ffprobePath string
 	ffmpegVer   string
+	hwAccel     string // "nvenc" | "qsv" | "amf" | "videotoolbox" | ""
 )
 
 func init() {
@@ -44,6 +45,12 @@ func detect() {
 			if len(parts) >= 3 {
 				ffmpegVer = parts[2]
 			}
+		}
+
+		// Deteksi hardware encoder yang tersedia
+		hwAccel = detectHWAccel()
+		if hwAccel != "" {
+			log.Printf("[transcode] hardware encoder tersedia: %s", hwAccel)
 		}
 	}
 }
@@ -128,6 +135,65 @@ func Available() bool { return ffmpegPath != "" && ffprobePath != "" }
 
 // Version mengembalikan string versi ffmpeg (mis. "6.1.1"), atau "" jika tidak ada.
 func Version() string { return ffmpegVer }
+
+// HWAccel mengembalikan nama hardware encoder yang terdeteksi, atau "" jika tidak ada.
+// Nilai yang mungkin: "nvenc" (NVIDIA), "qsv" (Intel), "amf" (AMD),
+// "videotoolbox" (macOS), atau "" (software encoding).
+func HWAccel() string { return hwAccel }
+
+// detectHWAccel mendeteksi hardware encoder H.264 yang tersedia di sistem.
+// Dipanggil sekali saat startup via detect().
+//
+// Prioritas: NVENC (NVIDIA) > QSV (Intel) > AMF (AMD) > VideoToolbox (macOS) > none.
+// Hanya cek encoder H.264 karena itu output target kita untuk transcode ke browser.
+//
+// Dua tahap validasi:
+//  1. Cek apakah encoder terdaftar di binary ffmpeg via -encoders
+//  2. Probe encode 1 detik (testsrc) untuk verifikasi encoder benar-benar bisa dipakai.
+//     Ini penting untuk kasus: ffmpeg di-build dengan h264_nvenc tapi GPU tidak ada,
+//     driver tidak terinstall, atau GPU sedang exclusive-locked oleh app lain.
+func detectHWAccel() string {
+	if ffmpegPath == "" {
+		return ""
+	}
+	out, err := exec.Command(ffmpegPath, "-hide_banner", "-encoders").Output()
+	if err != nil {
+		return ""
+	}
+	s := string(out)
+
+	// Urutan prioritas encoder
+	candidates := []struct {
+		name    string
+		encoder string
+	}{
+		{"nvenc", "h264_nvenc"},
+		{"qsv", "h264_qsv"},
+		{"amf", "h264_amf"},
+		{"videotoolbox", "h264_videotoolbox"},
+	}
+
+	for _, c := range candidates {
+		if !strings.Contains(s, c.encoder) {
+			continue
+		}
+		// Validasi runtime: coba encode 1 detik ke /dev/null (atau NUL di Windows).
+		// Kalau gagal (exit code != 0), encoder tidak benar-benar bisa dipakai.
+		nullDev := "pipe:1"
+		testCmd := exec.Command(ffmpegPath,
+			"-hide_banner", "-loglevel", "error",
+			"-f", "lavfi", "-i", "testsrc=duration=1:size=320x240:rate=1",
+			"-c:v", c.encoder,
+			"-frames:v", "1",
+			"-f", "null", nullDev,
+		)
+		if testErr := testCmd.Run(); testErr == nil {
+			return c.name
+		}
+		log.Printf("[transcode] %s terdaftar tapi gagal dipakai (driver/GPU tidak tersedia), skip", c.encoder)
+	}
+	return ""
+}
 
 // ── Semaphore untuk limit concurrent transcode ───────────────────────────────
 
@@ -254,15 +320,21 @@ func buildFFmpegArgs(absPath string, probe *ProbeResult, startSec float64, burnS
 		base = append(base, "-ss", strconv.FormatFloat(startSec, 'f', 1, 64))
 	}
 
+	// Hardware decode acceleration — hanya aktifkan untuk full-transcode (bukan remux/copy).
+	// Untuk remux, -hwaccel hanya menambah overhead inisialisasi GPU context tanpa manfaat.
+	// Kita tentukan strategi dulu, baru tambahkan flag kalau memang butuh encode.
+	videoOK := probe != nil && VideoCodecCompatible(probe.VideoCodec())
+	audioOK := probe != nil && AudioCodecCompatible(probe.AudioCodec())
+	needsHWAccel := hwAccel != "" && !(videoOK && audioOK) // bukan remux path
+	if needsHWAccel {
+		base = append(base, "-hwaccel", "auto")
+	}
+
 	base = append(base,
 		"-i", absPath,
 		"-map", "0:v:0",
 		"-map", "0:a:0?", // "?" = opsional, kalau tidak ada audio tetap jalan
 	)
-
-	// Pilih strategi codec
-	videoOK := probe != nil && VideoCodecCompatible(probe.VideoCodec())
-	audioOK := probe != nil && AudioCodecCompatible(probe.AudioCodec())
 
 	var codecArgs []string
 	if burnSubIndex >= 0 {
@@ -276,6 +348,9 @@ func buildFFmpegArgs(absPath string, probe *ProbeResult, startSec float64, burnS
 		// Hapus -map 0:v:0 dan -map 0:a:0? dari base karena akan di-override oleh filter_complex
 		// Kita rebuild args dari awal untuk burn-in agar tidak konflik dengan -map di base.
 		burnBase := []string{"-hide_banner", "-loglevel", "error"}
+		if hwAccel != "" {
+			burnBase = append(burnBase, "-hwaccel", "auto")
+		}
 		if startSec > 0 {
 			burnBase = append(burnBase, "-ss", strconv.FormatFloat(startSec, 'f', 1, 64))
 		}
@@ -284,7 +359,9 @@ func buildFFmpegArgs(absPath string, probe *ProbeResult, startSec float64, burnS
 			"-filter_complex", filterComplex,
 			"-map", "[v]",
 			"-map", "0:a:0?",
-			"-c:v", "libx264", "-preset", "veryfast", "-crf", "23", "-pix_fmt", "yuv420p",
+		)
+		burnArgs = append(burnArgs, buildVideoEncoder()...)
+		burnArgs = append(burnArgs,
 			"-c:a", "aac", "-b:a", "192k", "-ac", "2",
 			"-f", "mp4",
 			"-movflags", "frag_keyframe+empty_moov+default_base_moof",
@@ -304,11 +381,11 @@ func buildFFmpegArgs(absPath string, probe *ProbeResult, startSec float64, burnS
 				"-c:a", "aac", "-b:a", "192k", "-ac", "2",
 			}
 		default:
-			// Full transcode: video ke H.264, audio ke AAC
-			codecArgs = []string{
-				"-c:v", "libx264", "-preset", "veryfast", "-crf", "23", "-pix_fmt", "yuv420p",
+			// Full transcode: video ke H.264 (HW jika tersedia), audio ke AAC
+			codecArgs = buildVideoEncoder()
+			codecArgs = append(codecArgs,
 				"-c:a", "aac", "-b:a", "192k", "-ac", "2",
-			}
+			)
 		}
 	}
 
@@ -345,6 +422,72 @@ func strategyName(probe *ProbeResult) string {
 		return "audio transcode"
 	default:
 		return "full transcode"
+	}
+}
+
+// buildVideoEncoder mengembalikan argumen ffmpeg untuk encode video ke H.264.
+// Otomatis memilih hardware encoder jika tersedia, fallback ke libx264 software.
+//
+// Output selalu H.264 + yuv420p agar kompatibel semua browser.
+// GOP size -g 60 (keyframe tiap 2 detik pada 30fps) untuk seek-friendly output —
+// tanpa ini default ffmpeg GOP=250 frames (~8 detik) membuat seek di fMP4 terasa lambat.
+//
+// Encoder yang didukung:
+//   - nvenc  (NVIDIA): h264_nvenc, preset fast (kompatibel semua versi NVENC), VBR
+//   - qsv    (Intel):  h264_qsv, preset veryfast
+//   - amf    (AMD):    h264_amf, speed quality, CQP mode
+//   - videotoolbox (macOS): h264_videotoolbox, bitrate 5M
+//   - software: libx264, preset veryfast, CRF 23
+func buildVideoEncoder() []string {
+	switch hwAccel {
+	case "nvenc":
+		// Pakai legacy preset "fast" (bukan p1-p7) agar kompatibel ffmpeg 4.x.
+		// Preset p1-p7 baru ada di ffmpeg >= 4.4 + NVENC SDK 11+.
+		// VBR + CQ 23 memberikan kualitas konsisten tanpa bitrate cap ketat.
+		return []string{
+			"-c:v", "h264_nvenc",
+			"-preset", "fast", // kompatibel semua versi NVENC (bukan p4 yang butuh SDK 11+)
+			"-rc", "vbr", // variable bitrate — lebih stabil dari CQ saja
+			"-cq", "23", // target quality (mirip CRF di libx264)
+			"-b:v", "5M", // bitrate target untuk VBR
+			"-maxrate", "8M", // batas atas bitrate
+			"-g", "60", // keyframe tiap 2 detik (30fps) — seek-friendly
+			"-pix_fmt", "yuv420p",
+		}
+	case "qsv":
+		return []string{
+			"-c:v", "h264_qsv",
+			"-preset", "veryfast",
+			"-global_quality", "23",
+			"-g", "60",
+			"-pix_fmt", "yuv420p",
+		}
+	case "amf":
+		return []string{
+			"-c:v", "h264_amf",
+			"-quality", "speed",
+			"-rc", "cqp",
+			"-qp_i", "23",
+			"-qp_p", "25",
+			"-g", "60",
+			"-pix_fmt", "yuv420p",
+		}
+	case "videotoolbox":
+		return []string{
+			"-c:v", "h264_videotoolbox",
+			"-b:v", "5M",
+			"-g", "60",
+			"-pix_fmt", "yuv420p",
+		}
+	default:
+		// Software fallback: libx264
+		return []string{
+			"-c:v", "libx264",
+			"-preset", "veryfast",
+			"-crf", "23",
+			"-g", "60", // keyframe tiap 2 detik (30fps) — seek-friendly
+			"-pix_fmt", "yuv420p",
+		}
 	}
 }
 

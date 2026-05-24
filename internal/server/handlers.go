@@ -101,6 +101,10 @@ func HandleStream(cfg *Config) http.HandlerFunc {
 		}
 
 		w.Header().Set("Cache-Control", "private, max-age=300")
+		// Accept-Ranges sudah di-set otomatis oleh http.ServeFile, tapi kita
+		// set eksplisit sebagai hint ke browser bahwa file ini seekable.
+		w.Header().Set("Accept-Ranges", "bytes")
+		w.Header().Set("X-Content-Type-Options", "nosniff")
 		http.ServeFile(w, r, target)
 	}
 }
@@ -504,13 +508,27 @@ func HandleTranscode(cfg *Config) http.HandlerFunc {
 			}
 		}
 
-		if !transcode.NeedsTranscode(probe) && burnSubIndex < 0 {
-			redirectURL := "/api/stream?path=" + url.QueryEscape(relPath)
-			if tStr := strings.TrimSpace(r.URL.Query().Get("t")); tStr != "" {
-				redirectURL += "&t=" + url.QueryEscape(tStr)
+		// Optimasi Fase 1: kalau codec sudah kompatibel browser modern, redirect ke
+		// /api/stream agar dapat Range support + Content-Length + ~0% CPU.
+		//
+		// MKV: bisa di-serve langsung di Chrome/Firefox, TAPI tidak di Safari/iOS.
+		// Jadi cek User-Agent dulu sebelum redirect.
+		if burnSubIndex < 0 && transcode.CanDirectServe(probe) {
+			isMKV := transcode.IsMKVContainer(probe)
+			safariOrIOS := isSafariOrIOS(r.Header.Get("User-Agent"))
+
+			// Direct-serve OK kalau:
+			//   - Container bukan MKV (selalu aman: MP4/WebM/MOV), ATAU
+			//   - Container MKV TAPI client bukan Safari/iOS
+			if !isMKV || !safariOrIOS {
+				redirectURL := "/api/stream?path=" + url.QueryEscape(relPath)
+				if tStr := strings.TrimSpace(r.URL.Query().Get("t")); tStr != "" {
+					redirectURL += "&t=" + url.QueryEscape(tStr)
+				}
+				http.Redirect(w, r, redirectURL, http.StatusFound)
+				return
 			}
-			http.Redirect(w, r, redirectURL, http.StatusFound)
-			return
+			// Safari + MKV → fall-through ke remux ffmpeg di bawah (tidak ada cara lain)
 		}
 
 		// Parse param ?t=<detik>. Kalau kosong/tidak ada → 0 (mulai dari awal).
@@ -982,4 +1000,25 @@ func HandleLiveStop(hub *live.Hub) http.HandlerFunc {
 		hub.Leave(body.PeerID)
 		writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 	}
+}
+
+// isSafariOrIOS mengembalikan true kalau User-Agent berasal dari Safari atau
+// iOS device. Browser ini TIDAK support MKV native, harus selalu lewat transcode.
+//
+// Catatan: semua browser di iOS (Chrome iOS, Firefox iOS, dll) menggunakan
+// WebKit engine yang sama dengan Safari, sehingga semuanya tidak support MKV.
+func isSafariOrIOS(userAgent string) bool {
+	ua := strings.ToLower(userAgent)
+	// iOS device (iPhone, iPad, iPod) — semua browser di iOS pakai WebKit
+	if strings.Contains(ua, "iphone") || strings.Contains(ua, "ipad") || strings.Contains(ua, "ipod") {
+		return true
+	}
+	// Safari desktop (tapi bukan Chrome/Edge yang juga punya "safari" di UA string)
+	if strings.Contains(ua, "safari") &&
+		!strings.Contains(ua, "chrome") &&
+		!strings.Contains(ua, "chromium") &&
+		!strings.Contains(ua, "edg/") {
+		return true
+	}
+	return false
 }

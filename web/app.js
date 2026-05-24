@@ -384,7 +384,6 @@ function openPlayer(item) {
   }
 
   if (item.streamable === 'video') {
-    if (typeof setupSubtitle === 'function') setupSubtitle(item, filePathOf);
     if (document.pictureInPictureEnabled) playerPip.classList.remove('hidden');
 
     playerVideo.addEventListener('leavepictureinpicture', () => {
@@ -453,6 +452,13 @@ function openPlayer(item) {
 
     playerVideo.src = streamURL;
     playerVideo.load();
+
+    // Setup subtitle SETELAH src di-set.
+    // Penting untuk mobile: <track> yang di-append ke <video> tanpa src
+    // tidak akan di-fetch oleh browser. Dengan Blob URL approach di
+    // switchSubtitleEntry, ini sudah aman — tapi tetap set src dulu
+    // agar video element dalam state yang benar.
+    if (typeof setupSubtitle === 'function') setupSubtitle(item, filePathOf);
 
   } else if (item.streamable === 'audio') {
     playerAudioTitle.textContent = item.name;

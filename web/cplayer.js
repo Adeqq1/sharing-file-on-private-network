@@ -32,6 +32,7 @@ const cplayer = {
     pendingSeek: null,       // detik tujuan saat seek sedang dalam proses (untuk debounce)
     // ── Burn-in subtitle (PGS) ──
     burnSubIndex: -1,        // stream index PGS yang sedang di-burn-in (-1 = tidak ada)
+    _subtitleBlobUrl: null,  // Blob URL subtitle aktif (untuk revoke saat ganti/close)
   },
   abort: null, // AbortController untuk listener per-video
 };
@@ -699,6 +700,11 @@ function switchSubtitleEntry(entry) {
 
   // Hapus track lama (fix poin #6)
   cplayer.video.querySelectorAll('track').forEach(t => t.remove());
+  // Cabut Blob URL lama agar tidak memory leak
+  if (cplayer.state._subtitleBlobUrl) {
+    URL.revokeObjectURL(cplayer.state._subtitleBlobUrl);
+    cplayer.state._subtitleBlobUrl = null;
+  }
 
   const path = cplayer.state.currentPath;
 
@@ -727,28 +733,49 @@ function switchSubtitleEntry(entry) {
   }
 
   // KASUS NORMAL: subtitle text-based (external .srt/.vtt atau embedded ASS/SRT).
-  // Endpoint /api/subtitle handle keduanya — embedded pakai lang="embed:N".
-  const url = '/api/subtitle?path=' + encodeURIComponent(path) +
-              (entry.lang ? '&lang=' + encodeURIComponent(entry.lang) : '');
-
-  const track = document.createElement('track');
-  track.kind = 'subtitles';
-  track.label = entry.label || 'Subtitle';
-  track.srclang = entry.lang || 'und';
-  // Jangan set track.default = true untuk track dinamis — diabaikan browser,
-  // dan bisa menyebabkan konflik dengan track sebelumnya.
-  track.src = url;
-  cplayer.video.appendChild(track);
+  // Gunakan fetch() + Blob URL, bukan <track src="..."> langsung.
+  //
+  // Alasan: pada mobile browser (iOS Safari / Android Chrome), <track> yang
+  // di-append ke <video> yang belum punya src, atau yang mode-nya 'disabled',
+  // tidak akan di-fetch sama sekali. Blob URL menghindari masalah ini karena
+  // data sudah ada di memori — browser tidak perlu fetch lagi saat mode di-set.
+  const apiUrl = '/api/subtitle?path=' + encodeURIComponent(path) +
+                 (entry.lang ? '&lang=' + encodeURIComponent(entry.lang) : '');
 
   cplayer.state.currentLang = entry.lang || '';
   cplayer.state.ccEnabled = true;
 
-  // Set mode = 'showing' SEGERA setelah append.
-  // Ini wajib untuk mobile (iOS Safari / Android Chrome): browser tidak akan
-  // fetch URL subtitle kalau mode masih 'disabled' (default untuk track dinamis).
-  // Pada desktop Chrome/Firefox, browser lebih permisif dan fetch meski mode disabled.
-  const tt = cplayer.video.textTracks[cplayer.video.textTracks.length - 1];
-  if (tt) tt.mode = 'showing';
+  fetch(apiUrl)
+    .then(res => {
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      return res.blob();
+    })
+    .then(blob => {
+      // Pastikan subtitle ini masih relevan (user belum ganti video/subtitle)
+      if (!cplayer.video || cplayer.state.currentPath !== path) return;
+
+      const blobUrl = URL.createObjectURL(blob);
+      cplayer.state._subtitleBlobUrl = blobUrl;
+
+      // Hapus track lama lagi (mungkin ada yang masuk saat fetch berlangsung)
+      cplayer.video.querySelectorAll('track').forEach(t => t.remove());
+
+      const track = document.createElement('track');
+      track.kind = 'subtitles';
+      track.label = entry.label || 'Subtitle';
+      track.srclang = entry.lang || 'und';
+      track.src = blobUrl;
+      cplayer.video.appendChild(track);
+
+      // Set mode = 'showing' langsung setelah append.
+      // Dengan Blob URL, data sudah ada di memori — tidak ada network fetch,
+      // sehingga ini bekerja reliably di semua browser termasuk iOS Safari.
+      const tt = cplayer.video.textTracks[cplayer.video.textTracks.length - 1];
+      if (tt) tt.mode = 'showing';
+    })
+    .catch(() => {
+      // Subtitle gagal dimuat — tidak fatal, video tetap bisa diputar
+    });
 }
 
 function toggleCC(forceState) {
@@ -1341,6 +1368,12 @@ function resetCplayer() {
   cplayer.state.pendingSeek     = null;
   cplayer.state.burnSubIndex    = -1; // reset burn-in mode
   clearTimeout(_seekDebounceTimer);
+
+  // Cabut Blob URL subtitle agar tidak memory leak
+  if (cplayer.state._subtitleBlobUrl) {
+    URL.revokeObjectURL(cplayer.state._subtitleBlobUrl);
+    cplayer.state._subtitleBlobUrl = null;
+  }
 
   // Reset CSS rotate kalau masih aktif saat player ditutup
   if (cplayer.state.cssRotated) {

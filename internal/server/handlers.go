@@ -531,16 +531,6 @@ func HandleTranscode(cfg *Config) http.HandlerFunc {
 			// Safari + MKV → fall-through ke remux ffmpeg di bawah (tidak ada cara lain)
 		}
 
-		// Legacy path: file memang butuh transcode/remux (HEVC, AV1, AC3, Safari+MKV, dll)
-		if !transcode.NeedsTranscode(probe) && burnSubIndex < 0 {
-			redirectURL := "/api/stream?path=" + url.QueryEscape(relPath)
-			if tStr := strings.TrimSpace(r.URL.Query().Get("t")); tStr != "" {
-				redirectURL += "&t=" + url.QueryEscape(tStr)
-			}
-			http.Redirect(w, r, redirectURL, http.StatusFound)
-			return
-		}
-
 		// Parse param ?t=<detik>. Kalau kosong/tidak ada → 0 (mulai dari awal).
 		var startSec float64
 		if tStr := strings.TrimSpace(r.URL.Query().Get("t")); tStr != "" {

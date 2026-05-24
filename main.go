@@ -87,7 +87,11 @@ func main() {
 	fmt.Println("├─────────────────────────────────────────┤")
 	fmt.Printf("│  Shared  : %s\n", cfg.SharedFolder)
 	if transcode.Available() {
-		fmt.Printf("│  Transcode: ENABLED  (ffmpeg %s)\n", transcode.Version())
+		hwInfo := ""
+		if hw := transcode.HWAccel(); hw != "" {
+			hwInfo = ", HW: " + hw
+		}
+		fmt.Printf("│  Transcode: ENABLED  (ffmpeg %s%s)\n", transcode.Version(), hwInfo)
 	} else {
 		fmt.Println("│  Transcode: DISABLED (ffmpeg tidak ditemukan di PATH)")
 		fmt.Println("│             Install ffmpeg untuk memutar MKV/AVI/WMV/FLV")

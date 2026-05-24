@@ -172,6 +172,17 @@
     <!-- Upload input (tersembunyi) -->
     <input type="file" id="upload-input" class="hidden" multiple />
 
+    <!-- Upload progress area -->
+    <div id="upload-progress-container" class="upload-progress-container hidden"></div>
+
+    <!-- Drag-drop overlay -->
+    <div id="dropzone-overlay" class="dropzone-overlay hidden">
+      <div class="dropzone-inner">
+        <div class="dropzone-icon">⬇</div>
+        <div class="dropzone-text">Lepaskan file untuk upload</div>
+      </div>
+    </div>
+
     <!-- Player Modal (streaming video/audio) -->
     <div id="player-overlay" class="player-overlay hidden" role="dialog" aria-modal="true" aria-label="Media player">
       <div class="player-header">
@@ -181,12 +192,6 @@
         <button id="player-download" class="icon-btn player-close-btn" aria-label="Download" title="Download ke HP">
           <svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor">
             <path d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z"/>
-          </svg>
-        </button>
-        <!-- Tombol salin link untuk VLC/MX Player — selalu visible, berguna saat HEVC stuck -->
-        <button id="player-vlc" class="icon-btn player-close-btn" aria-label="Salin link untuk VLC" title="Salin link untuk VLC / MX Player" style="display:none">
-          <svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor">
-            <path d="M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z"/>
           </svg>
         </button>
         <button id="player-pip" class="icon-btn player-close-btn pip-btn hidden" aria-label="Picture in picture" title="Picture in Picture">⧉</button>

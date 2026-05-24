@@ -13,6 +13,7 @@ import (
 	"lan-server/internal/subtitle"
 	"lan-server/internal/transcode"
 	"log"
+	"mime/multipart"
 	"net/http"
 	"net/url"
 	"os"
@@ -582,6 +583,19 @@ func uniqueDestPath(dir, filename string) string {
 }
 
 // HandleUpload menangani POST /api/upload?path=<relative_folder>
+//
+// Body: multipart/form-data dengan satu atau banyak field bernama "file".
+// Setiap file di-stream langsung ke disk (tidak di-buffer ke memori).
+// Penulisan atomic via .uploading.tmp + rename agar file half-written tidak tertinggal.
+//
+// Response:
+//
+//	200 OK — selalu, dengan body:
+//	  { "results": [ { "name": "...", "size": 123, "ok": true }, ... ] }
+//	Item gagal dilaporkan per file lewat field "error", request keseluruhan
+//	tetap 200 supaya client bisa parse hasil partial.
+//
+// Limit ukuran per file dibaca dari cfg.UploadMaxBytes.
 func HandleUpload(cfg *Config) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
@@ -589,49 +603,98 @@ func HandleUpload(cfg *Config) http.HandlerFunc {
 			return
 		}
 
-		r.Body = http.MaxBytesReader(w, r.Body, 200<<20)
-
 		targetDir, ok := resolveSafeOrRespond(w, cfg.SharedFolder, r.URL.Query().Get("path"))
 		if !ok {
 			return
 		}
 
-		if err := r.ParseMultipartForm(200 << 20); err != nil {
-			if strings.Contains(err.Error(), "too large") {
-				writeJSON(w, http.StatusRequestEntityTooLarge, map[string]string{
-					"error": "Ukuran file melebihi batas 200 MB",
-				})
-				return
+		// Pastikan target adalah direktori yang valid.
+		if info, err := os.Stat(targetDir); err != nil || !info.IsDir() {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "folder tujuan tidak valid"})
+			return
+		}
+
+		reader, err := r.MultipartReader()
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "request bukan multipart/form-data"})
+			return
+		}
+
+		results := make([]uploadResult, 0, 4)
+		maxSize := cfg.UploadMaxBytes
+
+		for {
+			part, err := reader.NextPart()
+			if err == io.EOF {
+				break
 			}
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "gagal memproses form upload"})
-			return
+			if err != nil {
+				results = append(results, uploadResult{OK: false, Error: "gagal membaca part: " + err.Error()})
+				break
+			}
+
+			// Hanya proses field "file"; abaikan field lain.
+			if part.FormName() != "file" {
+				_, _ = io.Copy(io.Discard, part)
+				part.Close()
+				continue
+			}
+
+			res := saveOnePart(part, targetDir, maxSize)
+			part.Close()
+			results = append(results, res)
 		}
 
-		file, header, err := r.FormFile("file")
-		if err != nil {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "field 'file' tidak ditemukan"})
-			return
-		}
-		defer file.Close()
-
-		safeName := filepath.Base(header.Filename)
-		destPath := uniqueDestPath(targetDir, safeName)
-		finalName := filepath.Base(destPath)
-
-		dst, err := os.Create(destPath)
-		if err != nil {
-			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "gagal menyimpan file"})
-			return
-		}
-		defer dst.Close()
-
-		if _, err := io.Copy(dst, file); err != nil {
-			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "gagal menulis file"})
-			return
-		}
-
-		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "name": finalName})
+		writeJSON(w, http.StatusOK, map[string]any{"results": results})
 	}
+}
+
+// uploadResult adalah satu item hasil upload.
+type uploadResult struct {
+	Name  string `json:"name"`
+	Size  int64  `json:"size"`
+	OK    bool   `json:"ok"`
+	Error string `json:"error,omitempty"`
+}
+
+// saveOnePart menyimpan satu part multipart ke targetDir secara streaming + atomic.
+// Mengembalikan uploadResult dengan OK=false dan Error kalau ada masalah.
+func saveOnePart(part *multipart.Part, targetDir string, maxSize int64) uploadResult {
+	rawName := part.FileName()
+	safeName := SanitizeFilename(rawName)
+	if safeName == "" {
+		return uploadResult{Name: rawName, OK: false, Error: "nama file tidak valid"}
+	}
+
+	destPath := uniqueDestPath(targetDir, safeName)
+	finalName := filepath.Base(destPath)
+	tmpPath := destPath + ".uploading.tmp"
+
+	dst, err := os.Create(tmpPath)
+	if err != nil {
+		return uploadResult{Name: finalName, OK: false, Error: "gagal membuat file sementara"}
+	}
+
+	// Limit reader supaya tidak boleh > maxSize.
+	limited := &io.LimitedReader{R: part, N: maxSize + 1}
+	written, copyErr := io.Copy(dst, limited)
+	closeErr := dst.Close()
+
+	if copyErr != nil || closeErr != nil {
+		_ = os.Remove(tmpPath)
+		return uploadResult{Name: finalName, OK: false, Error: "gagal menulis file"}
+	}
+	if written > maxSize {
+		_ = os.Remove(tmpPath)
+		return uploadResult{Name: finalName, OK: false, Error: fmt.Sprintf("ukuran melebihi batas %d bytes", maxSize)}
+	}
+
+	if err := os.Rename(tmpPath, destPath); err != nil {
+		_ = os.Remove(tmpPath)
+		return uploadResult{Name: finalName, OK: false, Error: "gagal finalisasi file"}
+	}
+
+	return uploadResult{Name: finalName, Size: written, OK: true}
 }
 
 // HandleLogin menangani POST /api/login (PIN auth)

@@ -529,35 +529,126 @@ function downloadFile(item) {
 }
 
 // ===== Upload =====
-async function uploadFiles(files, targetPath) {
-  let successCount = 0;
-  let failCount = 0;
-  for (const file of files) {
+const uploadProgressContainer = $('upload-progress-container');
+
+// formatSpeed: bytes/detik → string human-readable.
+function formatSpeed(bps) {
+  if (bps < 1024) return `${bps.toFixed(0)} B/s`;
+  if (bps < 1024 * 1024) return `${(bps / 1024).toFixed(1)} KB/s`;
+  return `${(bps / 1024 / 1024).toFixed(1)} MB/s`;
+}
+
+// formatBytes: bytes → string human-readable.
+function formatBytes(b) {
+  if (b < 1024) return `${b} B`;
+  if (b < 1024 * 1024) return `${(b / 1024).toFixed(1)} KB`;
+  if (b < 1024 * 1024 * 1024) return `${(b / 1024 / 1024).toFixed(1)} MB`;
+  return `${(b / 1024 / 1024 / 1024).toFixed(2)} GB`;
+}
+
+// createUploadItem membuat 1 baris UI progress dan return helper functions.
+function createUploadItem(file) {
+  uploadProgressContainer.classList.remove('hidden');
+  const el = document.createElement('div');
+  el.className = 'upload-item';
+  el.innerHTML = `
+    <div class="upload-item-header">
+      <span class="upload-item-name" title="${escapeHtml(file.name)}">${escapeHtml(file.name)}</span>
+      <button class="upload-item-cancel" title="Batalkan">✕</button>
+    </div>
+    <div class="upload-item-bar"><div class="upload-item-bar-fill" style="width:0%"></div></div>
+    <div class="upload-item-meta"><span class="upload-item-status">Menunggu...</span><span class="upload-item-size">${formatBytes(file.size)}</span></div>
+  `;
+  uploadProgressContainer.appendChild(el);
+  const fill      = el.querySelector('.upload-item-bar-fill');
+  const status    = el.querySelector('.upload-item-status');
+  const cancelBtn = el.querySelector('.upload-item-cancel');
+  return {
+    el,
+    setProgress(loaded, speed) {
+      const pct = file.size > 0 ? (loaded / file.size) * 100 : 0;
+      fill.style.width = `${pct.toFixed(1)}%`;
+      status.textContent = `${pct.toFixed(0)}% • ${formatSpeed(speed)}`;
+    },
+    setSuccess(name) {
+      el.classList.add('success');
+      fill.style.width = '100%';
+      status.textContent = `✓ ${name}`;
+      cancelBtn.style.display = 'none';
+      setTimeout(() => {
+        el.remove();
+        if (uploadProgressContainer.children.length === 0) {
+          uploadProgressContainer.classList.add('hidden');
+        }
+      }, 4000);
+    },
+    setError(msg) {
+      el.classList.add('error');
+      status.textContent = `✗ ${msg}`;
+    },
+    onCancel(fn) { cancelBtn.addEventListener('click', fn); },
+  };
+}
+
+// uploadOne mengirim satu file dengan XHR agar dapat progress event.
+function uploadOne(file, targetPath) {
+  return new Promise((resolve) => {
+    const ui = createUploadItem(file);
+    const xhr = new XMLHttpRequest();
     const formData = new FormData();
     formData.append('file', file);
-    try {
-      const res = await apiFetch(
-        '/api/upload?path=' + encodeURIComponent(targetPath),
-        { method: 'POST', body: formData }
-      );
-      if (res.status === 413) {
-        showToast(`❌ "${file.name}" terlalu besar (maks 200 MB)`, true);
-        failCount++;
-        continue;
+
+    const startTime = Date.now();
+    xhr.upload.addEventListener('progress', (e) => {
+      if (!e.lengthComputable) return;
+      const elapsed = (Date.now() - startTime) / 1000;
+      const speed = elapsed > 0 ? e.loaded / elapsed : 0;
+      ui.setProgress(e.loaded, speed);
+    });
+
+    xhr.addEventListener('load', () => {
+      try {
+        const data = JSON.parse(xhr.responseText);
+        const r = (data.results && data.results[0]) || {};
+        if (xhr.status >= 200 && xhr.status < 300 && r.ok) {
+          ui.setSuccess(r.name || file.name);
+          resolve({ ok: true });
+        } else {
+          ui.setError(r.error || `HTTP ${xhr.status}`);
+          resolve({ ok: false });
+        }
+      } catch {
+        ui.setError(`HTTP ${xhr.status}`);
+        resolve({ ok: false });
       }
-      const data = await res.json();
-      if (data.ok) {
-        successCount++;
-      } else {
-        showToast(`❌ Gagal upload "${file.name}": ${data.error || 'error tidak diketahui'}`, true);
-        failCount++;
-      }
-    } catch {
-      failCount++;
+    });
+    xhr.addEventListener('error', () => { ui.setError('Koneksi error'); resolve({ ok: false }); });
+    xhr.addEventListener('abort', () => { ui.setError('Dibatalkan'); resolve({ ok: false }); });
+    ui.onCancel(() => xhr.abort());
+
+    xhr.open('POST', '/api/upload?path=' + encodeURIComponent(targetPath));
+    xhr.send(formData);
+  });
+}
+
+async function uploadFiles(files, targetPath) {
+  // Concurrency 3 — jangan terlalu banyak agar tidak saturate LAN.
+  const queue = Array.from(files);
+  const concurrency = 3;
+  let success = 0;
+  let fail = 0;
+
+  async function worker() {
+    while (queue.length > 0) {
+      const file = queue.shift();
+      const r = await uploadOne(file, targetPath);
+      if (r.ok) success++; else fail++;
     }
   }
-  if (successCount > 0) showToast(`✅ ${successCount} file berhasil diupload`);
-  if (failCount > 0) showToast(`❌ ${failCount} file gagal diupload`, true);
+  await Promise.all(Array.from({ length: Math.min(concurrency, files.length) }, worker));
+
+  if (success > 0) showToast(`✅ ${success} file berhasil diupload`);
+  if (fail > 0) showToast(`❌ ${fail} file gagal`, true);
   loadFiles(state.currentPath);
 }
 
@@ -886,3 +977,29 @@ if (btnHistoryClear) {
     renderHistory();
   });
 }
+
+// ===== Drag & Drop Upload =====
+const dropOverlay = $('dropzone-overlay');
+let dragCounter = 0;
+
+window.addEventListener('dragenter', (e) => {
+  if (activeTab !== 'home') return;
+  if (!e.dataTransfer || !e.dataTransfer.types.includes('Files')) return;
+  dragCounter++;
+  if (dropOverlay) dropOverlay.classList.remove('hidden');
+});
+window.addEventListener('dragleave', () => {
+  dragCounter = Math.max(0, dragCounter - 1);
+  if (dragCounter === 0 && dropOverlay) dropOverlay.classList.add('hidden');
+});
+window.addEventListener('dragover', (e) => {
+  if (e.dataTransfer && e.dataTransfer.types.includes('Files')) e.preventDefault();
+});
+window.addEventListener('drop', (e) => {
+  e.preventDefault();
+  dragCounter = 0;
+  if (dropOverlay) dropOverlay.classList.add('hidden');
+  if (activeTab !== 'home') return;
+  const files = e.dataTransfer && e.dataTransfer.files;
+  if (files && files.length > 0) uploadFiles(files, state.currentPath);
+});

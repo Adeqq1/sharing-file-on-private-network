@@ -378,7 +378,25 @@ function openPlayer(item) {
         if (typeof setTotalDuration === 'function') {
           // Pastikan ini masih untuk video yang sama (user belum ganti video)
           if (cplayer.state && cplayer.state.currentPath === filePathOf(item)) {
-            setTotalDuration(probe.duration, true);
+            // Cek apakah file ini akan di-serve native (CanDirectServe di backend).
+            // Kalau codec video+audio kompatibel browser, backend akan redirect ke
+            // /api/stream (native seek, ~0% CPU). Dalam kasus ini isTranscoded = false
+            // agar seek pakai native video.currentTime, bukan reload ffmpeg.
+            //
+            // Logika ini mirror CanDirectServe() di probe.go:
+            //   - video codec: h264/avc/vp8/vp9/av1 (atau tidak ada video)
+            //   - audio codec: aac/mp3/opus/vorbis/mp2 (atau tidak ada audio)
+            const compatVideoCodecs = ['h264', 'avc', 'vp8', 'vp9', 'av1'];
+            const compatAudioCodecs = ['aac', 'mp3', 'opus', 'vorbis', 'mp2'];
+            const videoStream = (probe.streams || []).find(s => s.type === 'video');
+            const audioStream = (probe.streams || []).find(s => s.type === 'audio');
+            const videoOK = !videoStream || compatVideoCodecs.includes((videoStream.codec || '').toLowerCase());
+            const audioOK = !audioStream || compatAudioCodecs.includes((audioStream.codec || '').toLowerCase());
+            const willDirectServe = videoOK && audioOK;
+
+            // isTranscoded = false kalau akan di-serve native (seek pakai video.currentTime)
+            // isTranscoded = true kalau butuh ffmpeg (seek pakai ?t= reload)
+            setTotalDuration(probe.duration, !willDirectServe);
           }
         }
       })

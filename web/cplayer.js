@@ -1190,8 +1190,46 @@ function _flushTranscodeSeek() {
   const url = '/api/transcode?' + new URLSearchParams(params).toString();
   const v = cplayer.video;
   const wasPaused = v.paused;
+
+  // Simpan info subtitle aktif sebelum src di-reset.
+  // Saat v.src di-set ulang, browser menghapus semua <track> yang sudah di-append.
+  // Kita perlu re-attach subtitle setelah video siap kembali.
+  const activeBlobUrl  = cplayer.state._subtitleBlobUrl;
+  const activeSubEntry = cplayer.state.availableSubs[cplayer.state.currentSubIdx];
+  const ccWasEnabled   = cplayer.state.ccEnabled && cplayer.state.burnSubIndex < 0;
+
+  // Reset Blob URL state — akan di-set ulang setelah re-attach
+  cplayer.state._subtitleBlobUrl = null;
+
   v.src = url;
   v.load();
+
+  // Re-attach subtitle setelah video siap (canplay).
+  // Pakai { once: true } agar tidak fire berkali-kali.
+  if (ccWasEnabled && activeBlobUrl && activeSubEntry) {
+    v.addEventListener('canplay', () => {
+      // Pastikan video masih sama dan subtitle masih aktif
+      if (!cplayer.video || cplayer.state.currentPath !== path) {
+        URL.revokeObjectURL(activeBlobUrl);
+        return;
+      }
+      // Hapus track lama (kalau ada sisa)
+      cplayer.video.querySelectorAll('track').forEach(t => t.remove());
+
+      const track = document.createElement('track');
+      track.kind    = 'subtitles';
+      track.label   = activeSubEntry.label || 'Subtitle';
+      track.srclang = activeSubEntry.lang  || 'und';
+      track.src     = activeBlobUrl;
+      cplayer.video.appendChild(track);
+
+      cplayer.state._subtitleBlobUrl = activeBlobUrl;
+
+      const tt = cplayer.video.textTracks[cplayer.video.textTracks.length - 1];
+      if (tt) tt.mode = 'showing';
+    }, { once: true });
+  }
+
   // Auto play setelah ready, kecuali user memang lagi pause
   if (!wasPaused) {
     v.addEventListener('canplay', () => v.play().catch(() => {}), { once: true });

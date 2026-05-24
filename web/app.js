@@ -479,12 +479,26 @@ function openPlayer(item) {
     playerVideo.src = streamURL;
     playerVideo.load();
 
-    // Setup subtitle SETELAH src di-set.
-    // Penting untuk mobile: <track> yang di-append ke <video> tanpa src
-    // tidak akan di-fetch oleh browser. Dengan Blob URL approach di
-    // switchSubtitleEntry, ini sudah aman — tapi tetap set src dulu
-    // agar video element dalam state yang benar.
-    if (typeof setupSubtitle === 'function') setupSubtitle(item, filePathOf);
+    // Setup subtitle DITUNDA sampai video benar-benar mulai play.
+    //
+    // Alasan (fix buffering di HP via WiFi):
+    //   - Browser HP hanya punya buffer 5–15 detik. Kalau subtitle fetch dimulai
+    //     bersamaan dengan transcode stream, bandwidth WiFi terbagi → buffer kosong
+    //     → video freeze.
+    //   - Pakai event 'playing' (BUKAN 'canplay') karena 'canplay' fire saat baru
+    //     cukup untuk 1 frame, sedangkan 'playing' fire saat playback benar-benar
+    //     berjalan dan buffer sudah mulai terisi.
+    //   - Delay tambahan 1.5 detik memberi waktu buffer video stabil sebelum
+    //     subtitle fetch ikut antri di koneksi WiFi.
+    //   - Tradeoff: subtitle muncul ~2–4 detik lebih lambat — jauh lebih bisa
+    //     diterima daripada video buffering berkali-kali.
+    playerVideo.addEventListener('playing', () => {
+      const delayTimer = setTimeout(() => {
+        if (typeof setupSubtitle === 'function') setupSubtitle(item, filePathOf);
+      }, 1500);
+      // Batalkan kalau player ditutup sebelum 1.5 detik habis
+      sig.addEventListener('abort', () => clearTimeout(delayTimer));
+    }, { once: true, signal: sig });
 
   } else if (item.streamable === 'audio') {
     playerAudioTitle.textContent = item.name;

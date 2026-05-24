@@ -33,6 +33,7 @@ const cplayer = {
     // ── Burn-in subtitle (PGS) ──
     burnSubIndex: -1,        // stream index PGS yang sedang di-burn-in (-1 = tidak ada)
     _subtitleBlobUrl: null,  // Blob URL subtitle aktif (untuk revoke saat ganti/close)
+    _subtitleAbort: null,    // AbortController untuk fetch subtitle aktif (cancel saat ganti bahasa)
   },
   abort: null, // AbortController untuk listener per-video
 };
@@ -771,8 +772,26 @@ function switchSubtitleEntry(entry) {
   cplayer.state.currentLang = entry.lang || '';
   cplayer.state.ccEnabled = true;
 
-  fetch(apiUrl)
+  // Cancel fetch subtitle sebelumnya kalau masih jalan (user ganti bahasa cepat)
+  if (cplayer.state._subtitleAbort) {
+    cplayer.state._subtitleAbort.abort();
+  }
+  cplayer.state._subtitleAbort = new AbortController();
+  const subtitleSig = cplayer.state._subtitleAbort.signal;
+
+  // Toast loading — untuk file besar (HEVC) extract bisa butuh 10-60 detik
+  showToastFromPlayer('💬 Memuat subtitle...');
+
+  // Warning timer — kalau > 30 detik belum balik, kasih hint ke user
+  const slowWarningTimer = setTimeout(() => {
+    if (!subtitleSig.aborted) {
+      showToastFromPlayer('⏳ Masih memproses subtitle... Server sedang extract dari video.');
+    }
+  }, 30000);
+
+  fetch(apiUrl, { signal: subtitleSig })
     .then(res => {
+      clearTimeout(slowWarningTimer);
       console.log('[sub] /api/subtitle status:', res.status);
       if (!res.ok) throw new Error('HTTP ' + res.status);
       return res.blob();
@@ -802,12 +821,17 @@ function switchSubtitleEntry(entry) {
       if (tt) tt.mode = 'showing';
       console.log('[sub] track appended, mode:', tt && tt.mode);
 
-      // Toast konfirmasi subtitle berhasil dimuat (Tahap 6)
+      // Toast sukses
       showToastFromPlayer('💬 Subtitle: ' + (entry.label || entry.lang || 'Default'));
     })
     .catch(err => {
+      clearTimeout(slowWarningTimer);
+      if (err.name === 'AbortError') {
+        // Bukan error nyata — user ganti subtitle sebelum fetch selesai
+        console.log('[sub] fetch dibatalkan (user ganti subtitle)');
+        return;
+      }
       console.error('[sub] fetch subtitle gagal:', err);
-      // Toast error agar user tahu subtitle gagal (Tahap 6)
       showToastFromPlayer('⚠ Subtitle gagal dimuat: ' + (err.message || 'error'));
     });
 }
@@ -1449,6 +1473,12 @@ function resetCplayer() {
   cplayer.state.pendingSeek     = null;
   cplayer.state.burnSubIndex    = -1; // reset burn-in mode
   clearTimeout(_seekDebounceTimer);
+
+  // Cancel fetch subtitle yang sedang berjalan (kalau ada)
+  if (cplayer.state._subtitleAbort) {
+    cplayer.state._subtitleAbort.abort();
+    cplayer.state._subtitleAbort = null;
+  }
 
   // Cabut Blob URL subtitle agar tidak memory leak
   if (cplayer.state._subtitleBlobUrl) {

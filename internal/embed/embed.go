@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"os/exec"
 	"strings"
 	"time"
@@ -118,17 +119,27 @@ func Extract(ctx context.Context, ffmpegPath, videoPath string, streamIndex int)
 		return nil, fmt.Errorf("ffmpeg tidak tersedia")
 	}
 
+	start := time.Now()
+	log.Printf("[embed] extract subtitle stream %d dari %s — mulai", streamIndex, videoPath)
+
 	args := []string{
 		"-v", "error",
 		"-i", videoPath,
 		"-map", fmt.Sprintf("0:%d", streamIndex),
+		// Skip video & audio stream — kita hanya butuh subtitle.
+		// Tanpa flag ini, ffmpeg demux full stream untuk file besar (HEVC 1080p)
+		// yang bisa makan 30-120 detik. Dengan -vn -an, extract jadi 5-10x lebih cepat.
+		"-vn", "-an",
+		// Skip data streams & attachments (font, cover art) yang ada di MKV
+		"-dn",
 		"-c:s", "webvtt",
 		"-f", "webvtt",
 		"-", // output ke stdout
 	}
 
-	// Timeout 60 detik — file besar bisa butuh waktu lebih lama
-	pCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
+	// Timeout 180 detik — file MKV besar (10+ GB) bisa butuh waktu lebih lama
+	// walaupun sudah pakai -vn -an karena tetap perlu read container header.
+	pCtx, cancel := context.WithTimeout(ctx, 180*time.Second)
 	defer cancel()
 
 	cmd := exec.CommandContext(pCtx, ffmpegPath, args...)
@@ -136,5 +147,7 @@ func Extract(ctx context.Context, ffmpegPath, videoPath string, streamIndex int)
 	if err != nil {
 		return nil, fmt.Errorf("ffmpeg extract gagal (stream %d): %w", streamIndex, err)
 	}
+
+	log.Printf("[embed] extract stream %d selesai (%d bytes, %.1fs)", streamIndex, len(out), time.Since(start).Seconds())
 	return out, nil
 }

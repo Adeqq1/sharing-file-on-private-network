@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -394,6 +395,42 @@ func HandleSubtitles(cfg *Config) http.HandlerFunc {
 							Track:  t.Index,
 							Image:  t.Image,
 						})
+					}
+
+					// Pre-extract semua text-based subtitle ke cache di background.
+					// Tujuan: saat user pilih bahasa di menu CC, response instan dari cache.
+					// Image-based (PGS) di-skip karena perlu burn-in (mahal, tidak useful pre-extract).
+					//
+					// Pakai context.Background() — BUKAN r.Context() — karena response sudah
+					// dikirim ke client. Kalau pakai r.Context(), saat response selesai dikirim,
+					// context cancel → ffmpeg di-kill → extract gagal.
+					ffmpeg := cfg.FFmpegBinary()
+					if ffmpeg != "" {
+						cacheKey, keyErr := embed.CacheKey(target)
+						if keyErr == nil {
+							for _, t := range tracks {
+								if t.Image {
+									continue // skip PGS — butuh burn-in, tidak useful pre-extract
+								}
+								// Cek cache dulu — kalau sudah ada, skip goroutine
+								if _, ok := embed.ReadCache(cfg.CacheDir(), cacheKey, t.Index); ok {
+									continue
+								}
+								// Spawn goroutine per stream — extract paralel di background
+								streamIdx := t.Index // capture untuk closure
+								videoPath := target  // capture untuk closure
+								go func() {
+									data, err := embed.Extract(context.Background(), ffmpeg, videoPath, streamIdx)
+									if err != nil {
+										log.Printf("[pre-extract] gagal stream %d (%s): %v", streamIdx, info.Name(), err)
+										return
+									}
+									if writeErr := embed.WriteCache(cfg.CacheDir(), cacheKey, streamIdx, data); writeErr != nil {
+										log.Printf("[pre-extract] WriteCache gagal: %v", writeErr)
+									}
+								}()
+							}
+						}
 					}
 				}
 			}

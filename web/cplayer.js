@@ -31,7 +31,7 @@ const cplayer = {
     isTranscoded: false,     // true kalau src berasal dari /api/transcode
     pendingSeek: null,       // detik tujuan saat seek sedang dalam proses (untuk debounce)
     // ── Burn-in subtitle (PGS) ──
-    burnSubIndex: -1,        // >= 0 kalau sedang mode burn-in PGS; -1 = tidak burn-in
+    burnSubIndex: -1,        // stream index PGS yang sedang di-burn-in (-1 = tidak ada)
   },
   abort: null, // AbortController untuk listener per-video
 };
@@ -113,47 +113,20 @@ function setupVideoEvents() {
     // Skip auto-resume kalau sudah di-reload dari offset (transcodeOffset > 0)
     if (cplayer.state.transcodeOffset > 0) return;
 
-    // Ambil posisi dari cache history app.js (sudah di-fetch saat loadFiles).
-    // Tidak perlu fetch ulang — menghindari race condition dan double round-trip.
-    _attemptResume(path);
-  });
-
-  // _attemptResume: cek posisi tersimpan dan resume kalau valid.
-  // Dipanggil dari loadedmetadata DAN dari setTotalDuration (setelah probe balik).
-  function _attemptResume(path) {
-    if (cplayer.state.transcodeOffset > 0) return; // sudah di-seek, skip
-
-    // Ambil dari cache app.js dulu (cross-device, server-side)
+    // Ambil posisi dari cache watchHistoryByPath (sudah di-fetch oleh app.js loadFiles).
+    // Tidak re-fetch /api/history di sini untuk menghindari round-trip dobel dan delay.
+    // Fallback ke localStorage kalau cache belum ada (mis. buka langsung dari URL).
     let saved = 0;
     const histEntry = window.watchHistoryByPath?.[path];
     if (histEntry && !histEntry.completed) {
       saved = histEntry.position_sec;
     }
-    // Fallback ke localStorage kalau cache kosong
     if (saved === 0) {
       saved = parseFloat(localStorage.getItem('cp_pos_' + path) || '0');
     }
-    if (saved <= RESUME_MIN_SEC) return;
 
-    const fullDur = effectiveDuration();
-    // Kalau durasi belum diketahui (probe belum balik), simpan saved untuk dicoba lagi
-    // saat setTotalDuration dipanggil.
-    if (!isFinite(fullDur) || fullDur <= 0) {
-      cplayer.state._pendingResumeSec = saved;
-      return;
-    }
-    if (saved >= fullDur - RESUME_MARGIN_SEC) return;
-
-    cplayer.state._pendingResumeSec = null;
-    if (cplayer.state.isTranscoded) {
-      requestTranscodeSeek(saved);
-    } else {
-      v.currentTime = saved;
-    }
-    showToastFromPlayer(`▶ Lanjut dari ${formatTime(saved)}`);
-  }
-  // Expose agar setTotalDuration bisa trigger resume setelah probe balik
-  window._attemptResume = _attemptResume;
+    _tryResume(saved);
+  });
 
   // Pakai requestAnimationFrame untuk update progress (poin #22)
   let lastSyncTime = 0;
@@ -196,8 +169,8 @@ function setupVideoEvents() {
       position_sec: effectiveCurrentTime(),
       duration_sec: effectiveDuration() || 0,
     });
+    // sendBeacon dengan Blob agar Content-Type = application/json (bukan text/plain default)
     if (navigator.sendBeacon) {
-      // Pakai Blob agar Content-Type = application/json (string body default ke text/plain)
       navigator.sendBeacon('/api/history/update', new Blob([body], { type: 'application/json' }));
     } else {
       fetch('/api/history/update', {
@@ -741,7 +714,7 @@ function switchSubtitleEntry(entry) {
     cplayer.state.isTranscoded = true;
     cplayer.state.currentLang = entry.lang || '';
     cplayer.state.ccEnabled = true;
-    cplayer.state.burnSubIndex = entry.track; // simpan agar seek bisa preserve
+    cplayer.state.burnSubIndex = entry.track; // simpan agar seek preserve burn-in
 
     const v = cplayer.video;
     const wasPaused = v.paused;
@@ -755,8 +728,6 @@ function switchSubtitleEntry(entry) {
 
   // KASUS NORMAL: subtitle text-based (external .srt/.vtt atau embedded ASS/SRT).
   // Endpoint /api/subtitle handle keduanya — embedded pakai lang="embed:N".
-  // Reset burn-in mode kalau sebelumnya aktif.
-  cplayer.state.burnSubIndex = -1;
   const url = '/api/subtitle?path=' + encodeURIComponent(path) +
               (entry.lang ? '&lang=' + encodeURIComponent(entry.lang) : '');
 
@@ -789,30 +760,36 @@ function switchSubtitleEntry(entry) {
 function toggleCC(forceState) {
   const newState = (forceState !== undefined) ? forceState : !cplayer.state.ccEnabled;
 
-  // Kalau sedang mode burn-in PGS dan user minta Off → reload video tanpa burnSub
-  if (!newState && cplayer.state.burnSubIndex >= 0) {
-    cplayer.state.burnSubIndex = -1;
-    cplayer.state.ccEnabled = false;
-    cplayer.state.currentLang = '';
+  // Kalau sedang burn-in mode (PGS) dan user minta Off → reload video tanpa burnSub
+  if (!newState && cplayer.state.burnSubIndex >= 0 && cplayer.state.isTranscoded) {
     const path = cplayer.state.currentPath;
-    if (!path) return;
-    const t = Math.max(0, Math.floor(effectiveCurrentTime()));
-    const params = new URLSearchParams({ path, t });
-    const url = '/api/transcode?' + params.toString();
-    cplayer.state.transcodeOffset = t;
-    const v = cplayer.video;
-    const wasPaused = v.paused;
-    v.src = url;
-    v.load();
-    if (!wasPaused) {
-      v.addEventListener('canplay', () => v.play().catch(() => {}), { once: true });
+    if (path) {
+      showToastFromPlayer('🔄 Memuat ulang tanpa subtitle...');
+      const t = Math.max(0, Math.floor(effectiveCurrentTime()));
+      const params = new URLSearchParams({ path, t });
+      const url = '/api/transcode?' + params.toString();
+
+      cplayer.state.burnSubIndex = -1;
+      cplayer.state.ccEnabled = false;
+      cplayer.state.transcodeOffset = t;
+
+      const v = cplayer.video;
+      const wasPaused = v.paused;
+      v.src = url;
+      v.load();
+      if (!wasPaused) {
+        v.addEventListener('canplay', () => v.play().catch(() => {}), { once: true });
+      }
+      return;
     }
-    showToastFromPlayer('Subtitle dimatikan');
-    return;
   }
 
+  // Normal: toggle HTML5 textTrack
   const tracks = cplayer.video.textTracks;
-  if (!tracks || tracks.length === 0) return;
+  if (!tracks || tracks.length === 0) {
+    cplayer.state.ccEnabled = newState;
+    return;
+  }
   cplayer.state.ccEnabled = newState;
   tracks[tracks.length - 1].mode = newState ? 'showing' : 'hidden';
 }
@@ -1141,7 +1118,7 @@ function _flushTranscodeSeek() {
   cplayer.state.transcodeOffset = t;
   cplayer.state.pendingSeek = null;
 
-  // Preserve burnSub kalau sedang mode burn-in PGS
+  // Preserve burnSub kalau sedang dalam mode burn-in PGS
   const params = { path, t };
   if (cplayer.state.burnSubIndex >= 0) {
     params.burnSub = cplayer.state.burnSubIndex;
@@ -1156,7 +1133,7 @@ function _flushTranscodeSeek() {
     v.addEventListener('canplay', () => v.play().catch(() => {}), { once: true });
   }
 
-  // Peringatan subtitle offset — tampilkan sekali per session kalau subtitle aktif (text-based)
+  // Peringatan subtitle offset — hanya untuk text-based subtitle (bukan burn-in)
   if (cplayer.state.ccEnabled && cplayer.state.burnSubIndex < 0 &&
       cplayer.video.textTracks.length > 0 &&
       !sessionStorage.getItem('cp_subOffsetWarned')) {
@@ -1368,8 +1345,7 @@ function resetCplayer() {
   cplayer.state.totalDuration   = 0;
   cplayer.state.isTranscoded    = false;
   cplayer.state.pendingSeek     = null;
-  cplayer.state.burnSubIndex    = -1;
-  cplayer.state._pendingResumeSec = null;
+  cplayer.state.burnSubIndex    = -1; // reset burn-in mode
   clearTimeout(_seekDebounceTimer);
 
   // Reset CSS rotate kalau masih aktif saat player ditutup
@@ -1396,17 +1372,37 @@ function setPlayerItem(item, path) {
 // Kalau durationSec = 0 dan isTranscoded = true, flag isTranscoded tetap di-set
 // agar effectiveDuration() tahu ini transcoded (fallback ke video.duration native
 // sampai probe balik dengan durasi sesungguhnya).
-// Setelah durasi diketahui, coba resume kalau ada pending resume dari loadedmetadata.
 function setTotalDuration(durationSec, isTranscoded) {
+  const wasZero = cplayer.state.totalDuration === 0;
   cplayer.state.totalDuration  = durationSec || 0;
   cplayer.state.isTranscoded   = !!isTranscoded;
   cplayer.state.transcodeOffset = 0;
 
-  // Kalau ada pending resume (loadedmetadata fire sebelum probe balik), coba sekarang
-  if (durationSec > 0 && cplayer.state._pendingResumeSec != null) {
+  // Kalau probe baru balik dengan durasi sesungguhnya (sebelumnya 0),
+  // coba resume lagi — ini fix race condition antara loadedmetadata dan probe.
+  if (wasZero && durationSec > 0 && cplayer.state.currentPath) {
     const path = cplayer.state.currentPath;
-    if (path && typeof window._attemptResume === 'function') {
-      window._attemptResume(path);
+    // Hanya resume kalau video belum mulai (currentTime masih di awal)
+    if ((cplayer.video?.currentTime ?? 0) < RESUME_MIN_SEC) {
+      const histEntry = window.watchHistoryByPath?.[path];
+      let saved = histEntry && !histEntry.completed ? histEntry.position_sec : 0;
+      if (saved === 0) saved = parseFloat(localStorage.getItem('cp_pos_' + path) || '0');
+      _tryResume(saved);
     }
+  }
+}
+
+// _tryResume: coba resume ke posisi tersimpan kalau valid.
+// Dipanggil dari loadedmetadata dan dari setTotalDuration (untuk fix race condition).
+function _tryResume(saved) {
+  if (!saved || saved <= 0) return;
+  const fullDur = effectiveDuration();
+  if (saved > RESUME_MIN_SEC && isFinite(fullDur) && fullDur > 0 && saved < fullDur - RESUME_MARGIN_SEC) {
+    if (cplayer.state.isTranscoded) {
+      requestTranscodeSeek(saved);
+    } else if (cplayer.video) {
+      cplayer.video.currentTime = saved;
+    }
+    showToastFromPlayer(`▶ Lanjut dari ${formatTime(saved)}`);
   }
 }

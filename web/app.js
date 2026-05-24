@@ -168,20 +168,11 @@ async function loadFiles(relPath = '') {
   searchInput.value = '';
   showSkeleton();
 
-  // Fetch history dan files secara PARALEL untuk mengurangi latency
-  const [, filesRes] = await Promise.allSettled([
-    loadHistoryCache(),
-    apiFetch('/api/files?path=' + encodeURIComponent(relPath)),
-  ]);
-
-  if (filesRes.status === 'rejected') {
-    fileList.innerHTML = '';
-    showError('Tidak dapat terhubung ke server. Pastikan server berjalan.');
-    return;
-  }
+  // Fetch history dan files secara paralel
+  await loadHistoryCache();
 
   try {
-    const res = filesRes.value;
+    const res = await apiFetch('/api/files?path=' + encodeURIComponent(relPath));
     const data = await res.json();
     if (!res.ok) {
       fileList.innerHTML = '';
@@ -251,19 +242,17 @@ function renderFiles(items) {
         return;
       }
       if (item.streamable) {
-        // Buka player SEGERA — jangan await probe/status agar tidak ada delay tap
-        openPlayer(item);
-
-        // Pre-flight checks berjalan di background (tidak block openPlayer)
+        // Pre-flight checks untuk video transcode: warning HEVC + cek antrian.
+        // Dijalankan PARALEL dengan openPlayer (tidak await) agar tidak ada delay tap.
         if (item.needs_transcode && item.streamable === 'video') {
-          // Cek antrian transcode (background)
+          // Cek antrian transcode (fire-and-forget)
           fetch('/api/transcode/status').then(r => r.ok ? r.json() : null).then(status => {
             if (status && !status.available) {
               showToast('⏳ Server sibuk transcode video lain. Tunggu beberapa detik...');
             }
           }).catch(() => {});
 
-          // Warning HEVC (background, sekali per session)
+          // Warning HEVC (sekali per session, fire-and-forget)
           if (!sessionStorage.getItem('cp_hevcWarned')) {
             fetch('/api/probe?path=' + encodeURIComponent(filePathOf(item)))
               .then(r => r.ok ? r.json() : null)
@@ -277,6 +266,7 @@ function renderFiles(items) {
               }).catch(() => {});
           }
         }
+        openPlayer(item);
       } else {
         downloadFile(item);
         showToast('⬇ Mendownload "' + item.name + '"');
@@ -368,12 +358,6 @@ function openPlayer(item) {
   playerOverlay.classList.remove('hidden');
   document.body.style.overflow = 'hidden';
 
-  // Tampilkan tombol VLC di header hanya untuk video yang butuh transcode
-  const playerVlc = $('player-vlc');
-  if (playerVlc) {
-    playerVlc.style.display = (item.needs_transcode && item.streamable === 'video') ? '' : 'none';
-  }
-
   if (typeof setPlayerItem === 'function') setPlayerItem(item, filePathOf(item));
   if (typeof setQueue === 'function') setQueue(state.allItems, item);
 
@@ -412,8 +396,31 @@ function openPlayer(item) {
 
     playerVideo.addEventListener('canplay', () => {
       playerSpinner.classList.add('hidden');
+      // Hapus pesan slow-transcode kalau ada
+      const spinnerEl = $('player-spinner');
+      if (spinnerEl) {
+        const msg = spinnerEl.querySelector('.spinner-msg');
+        if (msg) msg.remove();
+      }
       playerVideo.play().catch(() => {});
     }, { once: true, signal: sig });
+
+    // Untuk HEVC/transcode, tampilkan pesan informatif di spinner setelah 5 detik
+    // agar user tahu ini normal, bukan hang.
+    if (item.needs_transcode) {
+      const slowTranscodeTimer = setTimeout(() => {
+        const spinnerEl = $('player-spinner');
+        if (spinnerEl && !spinnerEl.classList.contains('hidden') && !spinnerEl.querySelector('.spinner-msg')) {
+          const msg = document.createElement('p');
+          msg.className = 'spinner-msg';
+          msg.textContent = 'Memproses video... (HEVC/transcode bisa 10–30 detik)';
+          msg.style.cssText = 'color:#fff;font-size:.8rem;margin-top:8px;text-align:center;opacity:.8;padding:0 16px';
+          spinnerEl.appendChild(msg);
+        }
+      }, 5000);
+      // Bersihkan timer kalau player ditutup sebelum 5 detik
+      playerAbort.signal.addEventListener('abort', () => clearTimeout(slowTranscodeTimer));
+    }
 
     playerVideo.addEventListener('error', () => {
       playerSpinner.classList.add('hidden');
@@ -442,28 +449,6 @@ function openPlayer(item) {
     if (item.needs_transcode && !sessionStorage.getItem('cp_transcodeHint')) {
       sessionStorage.setItem('cp_transcodeHint', '1');
       setTimeout(() => showToast('🎬 Konversi format on-the-fly... CPU laptop akan naik sebentar.'), 500);
-    }
-
-    // Untuk video transcode, tampilkan pesan elapsed di spinner agar user tidak pikir hang
-    if (item.needs_transcode) {
-      let elapsed = 0;
-      const spinnerMsg = document.createElement('div');
-      spinnerMsg.id = 'player-spinner-msg';
-      spinnerMsg.style.cssText = 'color:#fff;font-size:.8rem;margin-top:8px;text-align:center;opacity:.8';
-      spinnerMsg.textContent = 'Memproses video...';
-      playerSpinner.appendChild(spinnerMsg);
-      const elapsedTimer = setInterval(() => {
-        elapsed++;
-        spinnerMsg.textContent = `Memproses video... ${elapsed}s`;
-        if (elapsed >= 5) spinnerMsg.textContent = `Memproses video... ${elapsed}s (HEVC butuh waktu lebih lama)`;
-      }, 1000);
-      // Bersihkan timer saat canplay atau error
-      const clearTimer = () => {
-        clearInterval(elapsedTimer);
-        spinnerMsg.remove();
-      };
-      playerVideo.addEventListener('canplay', clearTimer, { once: true, signal: sig });
-      playerVideo.addEventListener('error', clearTimer, { once: true, signal: sig });
     }
 
     playerVideo.src = streamURL;
@@ -727,18 +712,7 @@ $('player-error-download').addEventListener('click', () => {
   }
 });
 
-// Player: tombol salin link untuk VLC / MX Player (di header, selalu accessible)
-const playerVlcBtn = $('player-vlc');
-if (playerVlcBtn) {
-  playerVlcBtn.addEventListener('click', () => {
-    if (!state.currentPlayerItem) return;
-    const url = location.origin + '/api/stream?path=' + encodeURIComponent(filePathOf(state.currentPlayerItem));
-    copyToClipboard(url);
-    showToast('🔗 Link disalin. Buka VLC → Stream → paste link.');
-  });
-}
-
-// Player: tombol salin link untuk VLC / MX Player (di error state)
+// Player: tombol salin link untuk VLC / MX Player
 $('player-error-native').addEventListener('click', () => {
   if (!state.currentPlayerItem) return;
   const url = location.origin + '/api/stream?path=' + encodeURIComponent(filePathOf(state.currentPlayerItem));
@@ -881,7 +855,7 @@ function formatTimeShort(sec) {
 }
 
 // openPlayerFromHistory: buka player dari entry history tanpa item lengkap dari API.
-function openPlayerFromHistory(entry) {
+async function openPlayerFromHistory(entry) {
   const ext = (entry.path.split('.').pop() || '').toLowerCase();
   const fakeItem = {
     name: entry.name,
@@ -891,15 +865,12 @@ function openPlayerFromHistory(entry) {
     needs_transcode: ['mkv', 'avi', 'wmv', 'flv', 'ts'].includes(ext),
     has_subtitle: false,
   };
-  // Navigasi ke folder yang benar dulu agar breadcrumb dan allItems konsisten,
-  // lalu buka player setelah loadFiles selesai.
+  // Navigate ke folder dulu agar state.allItems, breadcrumb, dan currentPath benar.
+  // Ini juga memastikan queue (prev/next) terisi dengan file di folder yang sama.
   const slash = entry.path.lastIndexOf('/');
   const dir = slash >= 0 ? entry.path.slice(0, slash) : '';
-  // Pindah ke tab home dulu agar file list terlihat saat player ditutup
-  switchTab('home');
-  loadFiles(dir).then(() => {
-    openPlayer(fakeItem);
-  });
+  await loadFiles(dir);
+  openPlayer(fakeItem);
 }
 
 // ===== Init =====

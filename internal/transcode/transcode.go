@@ -267,12 +267,14 @@ func buildFFmpegArgs(absPath string, probe *ProbeResult, startSec float64, burnS
 	var codecArgs []string
 	if burnSubIndex >= 0 {
 		// Burn-in subtitle image-based (PGS/VobSub): harus pakai -filter_complex overlay,
-		// BUKAN -vf subtitles= (yang hanya support text-based SRT/ASS).
-		// Syntax: [0:v][0:s:N]overlay[v]  di mana N = index relatif subtitle stream.
+		// BUKAN -vf subtitles= yang hanya support text-based (SRT/ASS/mov_text).
+		//
+		// Syntax: -filter_complex "[0:v][0:s:N]overlay[v]" -map "[v]" -map 0:a:0?
+		// di mana N adalah index relatif di antara subtitle stream (bukan global stream index).
 		si := subStreamIndex(probe, burnSubIndex)
 		filterComplex := fmt.Sprintf("[0:v][0:s:%d]overlay[v]", si)
-		// Hapus -map 0:v:0 dan -map 0:a:0? dari base karena -filter_complex butuh -map eksplisit
-		// yang berbeda. Kita rebuild args dari awal untuk kasus burn-in.
+		// Hapus -map 0:v:0 dan -map 0:a:0? dari base karena akan di-override oleh filter_complex
+		// Kita rebuild args dari awal untuk burn-in agar tidak konflik dengan -map di base.
 		burnBase := []string{"-hide_banner", "-loglevel", "error"}
 		if startSec > 0 {
 			burnBase = append(burnBase, "-ss", strconv.FormatFloat(startSec, 'f', 1, 64))
@@ -402,8 +404,9 @@ func (lw *limitedWriter) Write(p []byte) (int, error) {
 }
 
 // escapeForFFmpegFilter meng-escape path untuk dipakai di dalam ffmpeg filter syntax.
-// Dipakai untuk filter subtitles= (text-based). Untuk PGS burn-in, pakai -filter_complex overlay.
-// Escape yang diperlukan: colon → \:, backslash → \\, kutip → \', kurung siku → \[ \]
+// ffmpeg filter subtitles= butuh escape khusus untuk text-based subtitle.
+// Untuk PGS/image-based, gunakan -filter_complex overlay (tidak butuh escape path).
+// Contoh: "C:\foo\[bar].mkv" → "C\:/foo/\[bar\].mkv"
 func escapeForFFmpegFilter(path string) string {
 	// Konversi ke forward slash dulu
 	p := filepath.ToSlash(path)
@@ -413,7 +416,7 @@ func escapeForFFmpegFilter(path string) string {
 	p = strings.ReplaceAll(p, `:`, `\:`)
 	// Escape single quote
 	p = strings.ReplaceAll(p, `'`, `\'`)
-	// Escape kurung siku — sensitif di filtergraph syntax (mis. [Kusonime] di nama folder)
+	// Escape square brackets (umum di nama folder anime: "[Kusonime]")
 	p = strings.ReplaceAll(p, `[`, `\[`)
 	p = strings.ReplaceAll(p, `]`, `\]`)
 	return p

@@ -365,13 +365,21 @@ function openPlayer(item) {
   // effectiveDuration() sudah tahu mode transcode sebelum loadedmetadata fire.
   // Durasi total (totalDuration) diisi setelah probe balik — kalau probe lambat,
   // effectiveDuration() fallback ke video.duration native sampai probe selesai.
+  //
+  // PENTING: setTotalDuration(0, true) hanya set flag isTranscoded, TIDAK reset
+  // transcodeOffset. Ini aman karena resetCplayer() sudah dipanggil di atas
+  // yang memastikan transcodeOffset = 0 saat buka video baru.
   if (item.needs_transcode && item.streamable === 'video') {
-    if (typeof setTotalDuration === 'function') setTotalDuration(0, true); // flag dulu
+    if (typeof setTotalDuration === 'function') setTotalDuration(0, true); // set flag dulu, durasi menyusul
     fetch('/api/probe?path=' + encodeURIComponent(filePathOf(item)))
       .then(r => r.ok ? r.json() : null)
       .then(probe => {
-        if (probe && probe.duration && typeof setTotalDuration === 'function') {
-          setTotalDuration(probe.duration, true); // update dengan durasi sesungguhnya
+        if (!probe || !probe.duration) return;
+        if (typeof setTotalDuration === 'function') {
+          // Pastikan ini masih untuk video yang sama (user belum ganti video)
+          if (cplayer.state && cplayer.state.currentPath === filePathOf(item)) {
+            setTotalDuration(probe.duration, true);
+          }
         }
       })
       .catch(() => { /* probe gagal — effectiveDuration() fallback ke video.duration */ });

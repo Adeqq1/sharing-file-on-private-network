@@ -1163,12 +1163,21 @@ function _flushTranscodeSeek() {
   const path = cplayer.state.currentPath;
   if (!path || cplayer.state.pendingSeek == null) return;
 
+  const t = Math.max(0, Math.floor(cplayer.state.pendingSeek));
+  cplayer.state.pendingSeek = null;
+
+  // Guard: kalau target sama dengan offset sekarang (dalam toleransi 1 detik),
+  // tidak perlu reload — cukup update UI. Ini mencegah reload sia-sia saat
+  // user drag progress bar ke posisi yang hampir sama.
+  const currentOffset = cplayer.state.transcodeOffset;
+  if (Math.abs(t - currentOffset) < 1 && cplayer.video && !cplayer.video.ended) {
+    return;
+  }
+
   // Tampilkan spinner sekarang — seek benar-benar akan terjadi
   if (cplayer.dom.spinner) cplayer.dom.spinner.classList.remove('hidden');
 
-  const t = Math.max(0, Math.floor(cplayer.state.pendingSeek));
   cplayer.state.transcodeOffset = t;
-  cplayer.state.pendingSeek = null;
 
   // Preserve burnSub kalau sedang dalam mode burn-in PGS
   const params = { path, t };
@@ -1430,18 +1439,27 @@ function setPlayerItem(item, path) {
 // Kalau durationSec = 0 dan isTranscoded = true, flag isTranscoded tetap di-set
 // agar effectiveDuration() tahu ini transcoded (fallback ke video.duration native
 // sampai probe balik dengan durasi sesungguhnya).
+//
+// BUG FIX: jangan reset transcodeOffset di sini.
+// Fungsi ini dipanggil async (setelah /api/probe selesai). Kalau user sudah
+// seek ke menit 10 sebelum probe balik, reset offset ke 0 akan membuat
+// effectiveCurrentTime() salah hitung dan bisa memicu resume dari awal.
+// transcodeOffset hanya boleh di-reset di resetCplayer() (saat player ditutup)
+// atau di _flushTranscodeSeek() (saat seek baru dimulai).
 function setTotalDuration(durationSec, isTranscoded) {
   const wasZero = cplayer.state.totalDuration === 0;
-  cplayer.state.totalDuration  = durationSec || 0;
-  cplayer.state.isTranscoded   = !!isTranscoded;
-  cplayer.state.transcodeOffset = 0;
+  cplayer.state.totalDuration = durationSec || 0;
+  cplayer.state.isTranscoded  = !!isTranscoded;
+  // TIDAK reset transcodeOffset di sini — lihat komentar di atas.
 
   // Kalau probe baru balik dengan durasi sesungguhnya (sebelumnya 0),
-  // coba resume lagi — ini fix race condition antara loadedmetadata dan probe.
+  // coba resume — ini fix race condition antara loadedmetadata dan probe.
+  // Guard: hanya kalau video masih di awal (belum di-seek manual oleh user).
   if (wasZero && durationSec > 0 && cplayer.state.currentPath) {
     const path = cplayer.state.currentPath;
-    // Hanya resume kalau video belum mulai (currentTime masih di awal)
-    if ((cplayer.video?.currentTime ?? 0) < RESUME_MIN_SEC) {
+    const currentAbsPos = effectiveCurrentTime();
+    // Hanya resume kalau posisi absolut masih di awal (user belum seek)
+    if (currentAbsPos < RESUME_MIN_SEC) {
       const histEntry = window.watchHistoryByPath?.[path];
       let saved = histEntry && !histEntry.completed ? histEntry.position_sec : 0;
       if (saved === 0) saved = parseFloat(localStorage.getItem('cp_pos_' + path) || '0');
@@ -1452,15 +1470,24 @@ function setTotalDuration(durationSec, isTranscoded) {
 
 // _tryResume: coba resume ke posisi tersimpan kalau valid.
 // Dipanggil dari loadedmetadata dan dari setTotalDuration (untuk fix race condition).
+// Guard: kalau video sudah di posisi yang benar (misal setelah seek manual),
+// jangan resume lagi agar tidak override posisi user.
 function _tryResume(saved) {
   if (!saved || saved <= 0) return;
   const fullDur = effectiveDuration();
-  if (saved > RESUME_MIN_SEC && isFinite(fullDur) && fullDur > 0 && saved < fullDur - RESUME_MARGIN_SEC) {
-    if (cplayer.state.isTranscoded) {
-      requestTranscodeSeek(saved);
-    } else if (cplayer.video) {
-      cplayer.video.currentTime = saved;
-    }
-    showToastFromPlayer(`▶ Lanjut dari ${formatTime(saved)}`);
+  if (!isFinite(fullDur) || fullDur <= 0) return;
+  if (saved <= RESUME_MIN_SEC) return;
+  if (saved >= fullDur - RESUME_MARGIN_SEC) return;
+
+  // Guard: jangan resume kalau video sudah di posisi yang signifikan.
+  // Ini mencegah resume override seek manual yang dilakukan user sebelum probe balik.
+  const currentAbsPos = effectiveCurrentTime();
+  if (currentAbsPos > RESUME_MIN_SEC) return;
+
+  if (cplayer.state.isTranscoded) {
+    requestTranscodeSeek(saved);
+  } else if (cplayer.video) {
+    cplayer.video.currentTime = saved;
   }
+  showToastFromPlayer(`▶ Lanjut dari ${formatTime(saved)}`);
 }

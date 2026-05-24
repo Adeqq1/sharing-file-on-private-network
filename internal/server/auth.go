@@ -130,6 +130,15 @@ func AuthMiddleware(pinEnabled bool, next http.Handler) http.Handler {
 			next.ServeHTTP(w, r)
 			return
 		}
+		// Subtitle endpoint tidak perlu auth — <track> element di mobile browser
+		// (iOS Safari / Android Chrome) tidak mengirim cookie saat fetch subresource,
+		// sehingga request selalu kena 401 meski user sudah login.
+		// Subtitle hanya bisa diakses kalau tahu path file yang valid (sudah di dalam
+		// shared_folder), jadi aman untuk di-bypass.
+		if r.URL.Path == "/api/subtitle" || r.URL.Path == "/api/subtitles" {
+			next.ServeHTTP(w, r)
+			return
+		}
 		cookie, err := r.Cookie("auth")
 		if err != nil || !IsValidToken(cookie.Value) {
 			// Untuk API, kembalikan 401 JSON

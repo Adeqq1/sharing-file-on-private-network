@@ -108,6 +108,15 @@ func HandleStream(cfg *Config) http.HandlerFunc {
 // HandleSubtitle menangani GET /api/subtitle?path=<video-path>&lang=<id|en|embed:N|...>
 func HandleSubtitle(cfg *Config) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		// Handle CORS preflight — mobile browser (Chrome Android) mengirim OPTIONS
+		// sebelum fetch <track> subtitle karena dianggap cross-origin subresource.
+		if r.Method == http.MethodOptions {
+			w.Header().Set("Access-Control-Allow-Origin", "*")
+			w.Header().Set("Access-Control-Allow-Methods", "GET, OPTIONS")
+			w.Header().Set("Access-Control-Allow-Headers", "Range, Cookie")
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
 		if r.Method != http.MethodGet {
 			writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
 			return

@@ -735,26 +735,20 @@ function switchSubtitleEntry(entry) {
   track.kind = 'subtitles';
   track.label = entry.label || 'Subtitle';
   track.srclang = entry.lang || 'und';
-  track.default = true;
+  // Jangan set track.default = true untuk track dinamis — diabaikan browser,
+  // dan bisa menyebabkan konflik dengan track sebelumnya.
   track.src = url;
   cplayer.video.appendChild(track);
 
   cplayer.state.currentLang = entry.lang || '';
   cplayer.state.ccEnabled = true;
 
-  // Update mode setelah track loaded
-  track.addEventListener('load', () => {
-    if (cplayer.video.textTracks.length > 0 && cplayer.state.ccEnabled) {
-      cplayer.video.textTracks[cplayer.video.textTracks.length - 1].mode = 'showing';
-    }
-  }, { once: true });
-
-  // Pakai timeout sebagai fallback kalau load event tidak fire
-  setTimeout(() => {
-    if (cplayer.video.textTracks.length > 0 && cplayer.state.ccEnabled) {
-      cplayer.video.textTracks[cplayer.video.textTracks.length - 1].mode = 'showing';
-    }
-  }, 100);
+  // Set mode = 'showing' SEGERA setelah append.
+  // Ini wajib untuk mobile (iOS Safari / Android Chrome): browser tidak akan
+  // fetch URL subtitle kalau mode masih 'disabled' (default untuk track dinamis).
+  // Pada desktop Chrome/Firefox, browser lebih permisif dan fetch meski mode disabled.
+  const tt = cplayer.video.textTracks[cplayer.video.textTracks.length - 1];
+  if (tt) tt.mode = 'showing';
 }
 
 function toggleCC(forceState) {

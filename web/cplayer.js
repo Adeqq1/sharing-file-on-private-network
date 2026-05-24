@@ -114,6 +114,9 @@ function setupVideoEvents() {
     // Skip auto-resume kalau sudah di-reload dari offset (transcodeOffset > 0)
     if (cplayer.state.transcodeOffset > 0) return;
 
+    // Skip auto-resume kalau ada seek yang sedang pending (user sudah seek manual)
+    if (cplayer.state.pendingSeek != null) return;
+
     // Ambil posisi dari cache watchHistoryByPath (sudah di-fetch oleh app.js loadFiles).
     // Tidak re-fetch /api/history di sini untuk menghindari round-trip dobel dan delay.
     // Fallback ke localStorage kalau cache belum ada (mis. buka langsung dari URL).

@@ -1,13 +1,46 @@
 package embed
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"os/exec"
 	"strings"
 	"time"
 )
+
+// ── Semaphore untuk limit concurrent subtitle extract ────────────────────────
+
+// maxConcurrentExtracts membatasi jumlah proses ffmpeg subtitle-extract yang
+// berjalan bersamaan. Nilai 1 memastikan extract berjalan serial — tidak ada
+// dua ffmpeg extract yang bersaing untuk CPU/disk secara bersamaan.
+//
+// Alasan nilai 1 (bukan 2+):
+//   - Extract subtitle text-based biasanya selesai dalam 5–60 detik.
+//   - Antrian serial OK untuk LAN rumah — user tidak akan pilih 2 subtitle sekaligus.
+//   - Yang paling penting: tidak ada extract yang bersaing dengan transcode video
+//     yang sedang streaming ke HP (buffer browser HP hanya 5–15 detik).
+const maxConcurrentExtracts = 1
+
+var extractSem = make(chan struct{}, maxConcurrentExtracts)
+
+// acquireExtract mengambil slot semaphore. Blokir sampai ada slot kosong
+// atau context di-cancel. Mengembalikan false kalau context di-cancel.
+func acquireExtract(ctx context.Context) bool {
+	select {
+	case extractSem <- struct{}{}:
+		return true
+	case <-ctx.Done():
+		return false
+	}
+}
+
+// releaseExtract melepas slot semaphore.
+func releaseExtract() {
+	<-extractSem
+}
 
 // Track merepresentasikan satu stream subtitle di dalam file video.
 type Track struct {
@@ -113,28 +146,79 @@ func Probe(ctx context.Context, ffprobePath, videoPath string) ([]Track, error) 
 // Untuk ASS/SSA, styling kompleks (color, position) akan hilang — hanya teks dan timing.
 //
 // streamIndex adalah nilai Track.Index yang didapat dari Probe().
+//
+// Fix buffering di HP (issue #38):
+//   - Semaphore: maks 1 extract berjalan bersamaan agar tidak bersaing dengan transcode.
+//   - -threads 1: batasi CPU usage ffmpeg extract agar transcode streaming tidak terganggu.
+//   - applyLowPriority: set process priority rendah (Below Normal di Windows, nice 10 di Unix).
+//   - Refactor ke Start/Wait: diperlukan agar applyNiceFunc bisa dipanggil setelah Start.
 func Extract(ctx context.Context, ffmpegPath, videoPath string, streamIndex int) ([]byte, error) {
 	if ffmpegPath == "" {
 		return nil, fmt.Errorf("ffmpeg tidak tersedia")
 	}
 
+	// Antri di semaphore — maks 1 extract berjalan bersamaan.
+	// Ini mencegah banyak request subtitle paralel men-spawn banyak ffmpeg
+	// yang bersaing dengan transcode video yang sedang streaming ke HP.
+	if !acquireExtract(ctx) {
+		return nil, ctx.Err()
+	}
+	defer releaseExtract()
+
+	start := time.Now()
+	log.Printf("[embed] extract subtitle stream %d dari %s — mulai", streamIndex, videoPath)
+
 	args := []string{
 		"-v", "error",
+		// Batasi decoder thread ke 1 — subtitle extract sangat ringan,
+		// tidak perlu banyak thread. Ini membebaskan CPU core untuk transcode.
+		"-threads", "1",
 		"-i", videoPath,
 		"-map", fmt.Sprintf("0:%d", streamIndex),
+		// Skip video & audio stream — kita hanya butuh subtitle.
+		// Tanpa flag ini, ffmpeg demux full stream untuk file besar (HEVC 1080p)
+		// yang bisa makan 30-120 detik. Dengan -vn -an, extract jadi 5-10x lebih cepat.
+		"-vn", "-an",
+		// Skip data streams & attachments (font, cover art) yang ada di MKV
+		"-dn",
+		// Batasi encoder thread ke 1 juga (flag setelah -i berlaku untuk encoder)
+		"-threads", "1",
 		"-c:s", "webvtt",
 		"-f", "webvtt",
 		"-", // output ke stdout
 	}
 
-	// Timeout 60 detik — file besar bisa butuh waktu lebih lama
-	pCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
+	// Timeout 180 detik — file MKV besar (10+ GB) bisa butuh waktu lebih lama
+	// walaupun sudah pakai -vn -an karena tetap perlu read container header.
+	pCtx, cancel := context.WithTimeout(ctx, 180*time.Second)
 	defer cancel()
 
 	cmd := exec.CommandContext(pCtx, ffmpegPath, args...)
-	out, err := cmd.Output()
-	if err != nil {
+
+	// Set process priority rendah agar ffmpeg extract mengalah pada transcode.
+	// Di Windows: BELOW_NORMAL_PRIORITY_CLASS via CreationFlags.
+	// Di Unix: Setpgid=true, lalu nice 10 di-apply setelah Start().
+	applyLowPriority(cmd)
+
+	var stdout bytes.Buffer
+	cmd.Stdout = &stdout
+
+	// Pakai Start+Wait (bukan Output) agar bisa apply nice setelah Start di Unix.
+	if err := cmd.Start(); err != nil {
+		return nil, fmt.Errorf("ffmpeg start gagal (stream %d): %w", streamIndex, err)
+	}
+
+	// Unix: apply nice value setelah Start() karena PID baru tersedia setelah Start.
+	// Windows: applyNiceFunc = nil, baris ini no-op.
+	if applyNiceFunc != nil {
+		applyNiceFunc(cmd.Process.Pid)
+	}
+
+	if err := cmd.Wait(); err != nil {
 		return nil, fmt.Errorf("ffmpeg extract gagal (stream %d): %w", streamIndex, err)
 	}
+
+	out := stdout.Bytes()
+	log.Printf("[embed] extract stream %d selesai (%d bytes, %.1fs)", streamIndex, len(out), time.Since(start).Seconds())
 	return out, nil
 }

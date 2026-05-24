@@ -39,7 +39,10 @@ const cplayer = {
 };
 
 // ── Konstanta seek ───────────────────────────────────────────────────────────
-const SEEK_DEBOUNCE_MS  = 250; // ms tunggu setelah drag sebelum spawn ffmpeg
+const SEEK_DEBOUNCE_MS        = 250; // ms debounce untuk video native / remux
+const SEEK_DEBOUNCE_TRANSCODE = 500; // ms debounce untuk full transcode (HEVC, burn-in)
+                                     // lebih lama agar tidak spawn ffmpeg terlalu sering
+                                     // saat user drag progress bar di video berat
 const RESUME_MIN_SEC    = 5;   // posisi tersimpan < 5 detik diabaikan
 const RESUME_MARGIN_SEC = 10;  // posisi tersimpan < (durasi - 10s) agar tidak loop di akhir
 // Detect iOS — volume tidak bisa diset programmatically
@@ -1175,13 +1178,21 @@ function seekRelative(deltaSec) {
 let _seekDebounceTimer = null;
 
 // requestTranscodeSeek: reload <video>.src dengan offset baru.
-// Pakai debounce SEEK_DEBOUNCE_MS agar drag progress bar tidak spawn banyak request ffmpeg.
+// Pakai debounce adaptif agar drag progress bar tidak spawn banyak request ffmpeg:
+//   - Full transcode / burn-in (HEVC, PGS): 500ms — ffmpeg butuh beberapa detik
+//     untuk output pertama, spawn terlalu sering hanya buang CPU
+//   - Remux / native: 250ms — hampir instan, debounce pendek lebih responsif
 // Spinner ditampilkan di dalam setTimeout (bukan di luar) agar tidak stuck
 // kalau seek dibatalkan sebelum debounce habis.
 function requestTranscodeSeek(targetSec) {
   cplayer.state.pendingSeek = targetSec;
   clearTimeout(_seekDebounceTimer);
-  _seekDebounceTimer = setTimeout(() => _flushTranscodeSeek(), SEEK_DEBOUNCE_MS);
+  // Pakai debounce lebih lama untuk burn-in (PGS) dan full transcode
+  // karena ffmpeg butuh waktu sebelum output pertama keluar.
+  const debounceMs = cplayer.state.burnSubIndex >= 0
+    ? SEEK_DEBOUNCE_TRANSCODE  // burn-in PGS — paling berat
+    : SEEK_DEBOUNCE_MS;        // remux / native
+  _seekDebounceTimer = setTimeout(() => _flushTranscodeSeek(), debounceMs);
 }
 
 // _flushTranscodeSeek: eksekusi seek segera (dipanggil dari debounce atau pointerup).

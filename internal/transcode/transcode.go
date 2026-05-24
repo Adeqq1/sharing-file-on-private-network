@@ -459,6 +459,7 @@ func buildVideoEncoder() []string {
 			"-c:v", "h264_qsv",
 			"-preset", "veryfast",
 			"-global_quality", "23",
+			"-low_power", "1", // low-power mode QSV — kurangi latency output pertama
 			"-g", "60",
 			"-pix_fmt", "yuv420p",
 		}
@@ -481,11 +482,16 @@ func buildVideoEncoder() []string {
 		}
 	default:
 		// Software fallback: libx264
+		// -tune zerolatency: kurangi buffering internal encoder agar output pertama
+		// keluar lebih cepat — penting untuk streaming fMP4 yang di-seek.
+		// Trade-off: sedikit turun kualitas vs veryfast tanpa tune, tapi untuk
+		// LAN streaming ini acceptable.
 		return []string{
 			"-c:v", "libx264",
 			"-preset", "veryfast",
+			"-tune", "zerolatency",
 			"-crf", "23",
-			"-g", "60", // keyframe tiap 2 detik (30fps) — seek-friendly
+			"-g", "60",
 			"-pix_fmt", "yuv420p",
 		}
 	}

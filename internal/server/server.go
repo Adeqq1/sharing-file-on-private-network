@@ -43,6 +43,8 @@ func New(cfg *Config) http.Handler {
 	// API routes
 	mux.HandleFunc("/api/files", HandleFiles(cfg))
 	mux.HandleFunc("/api/download", HandleDownload(cfg))
+	mux.HandleFunc("/api/download-zip", HandleDownloadZip(cfg))
+	mux.HandleFunc("/api/mkdir", HandleMkdir(cfg))
 	mux.HandleFunc("/api/stream", HandleStream(cfg))
 	mux.HandleFunc("/api/transcode", HandleTranscode(cfg))
 	mux.HandleFunc("/api/transcode/status", HandleTranscodeStatus())

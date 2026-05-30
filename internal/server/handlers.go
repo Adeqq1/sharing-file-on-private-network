@@ -1,6 +1,7 @@
 package server
 
 import (
+	"archive/zip"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -611,6 +612,139 @@ func uniqueDestPath(dir, filename string) string {
 		}
 	}
 	return dest
+}
+
+// HandleDownloadZip menangani GET /api/download-zip?path=<relative_folder>
+// Stream isi folder sebagai arsip ZIP on-the-fly (tidak menyimpan ke disk).
+// Mendukung juga banyak path: ?path=a&path=b → zip gabungan bernama download.zip.
+func HandleDownloadZip(cfg *Config) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		rawPaths := r.URL.Query()["path"]
+		if len(rawPaths) == 0 {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "path wajib diisi"})
+			return
+		}
+
+		// Validasi semua path sebelum mulai streaming
+		type resolvedEntry struct {
+			abs   string
+			isDir bool
+			name  string
+		}
+		entries := make([]resolvedEntry, 0, len(rawPaths))
+		for _, rp := range rawPaths {
+			abs, err := files.ResolveSafe(cfg.SharedFolder, rp)
+			if err != nil {
+				writeJSON(w, http.StatusBadRequest, map[string]string{"error": "path tidak diizinkan: " + rp})
+				return
+			}
+			info, err := os.Stat(abs)
+			if err != nil {
+				writeJSON(w, http.StatusNotFound, map[string]string{"error": "tidak ditemukan: " + rp})
+				return
+			}
+			entries = append(entries, resolvedEntry{abs: abs, isDir: info.IsDir(), name: info.Name()})
+		}
+
+		// Tentukan nama file zip
+		zipName := "download"
+		if len(entries) == 1 {
+			zipName = entries[0].name
+		}
+		safeZipName := SanitizeFilename(zipName)
+		if safeZipName == "" {
+			safeZipName = "download"
+		}
+
+		w.Header().Set("Content-Type", "application/zip")
+		w.Header().Set("Content-Disposition",
+			fmt.Sprintf(`attachment; filename="%s.zip"`, safeZipName))
+		w.Header().Set("Cache-Control", "no-store")
+
+		zw := zip.NewWriter(w)
+		defer zw.Close()
+
+		addFileToZip := func(absPath, relInZip string) {
+			f, err := os.Open(absPath)
+			if err != nil {
+				return
+			}
+			defer f.Close()
+			fi, err := f.Stat()
+			if err != nil {
+				return
+			}
+			hdr, err := zip.FileInfoHeader(fi)
+			if err != nil {
+				return
+			}
+			hdr.Name = filepath.ToSlash(relInZip)
+			hdr.Method = zip.Deflate
+			wr, err := zw.CreateHeader(hdr)
+			if err != nil {
+				return
+			}
+			_, _ = io.Copy(wr, f)
+		}
+
+		for _, entry := range entries {
+			if !entry.isDir {
+				addFileToZip(entry.abs, entry.name)
+				continue
+			}
+			// Folder: walk rekursif
+			_ = filepath.Walk(entry.abs, func(path string, fi os.FileInfo, walkErr error) error {
+				if walkErr != nil || fi.IsDir() {
+					return nil
+				}
+				rel, err := filepath.Rel(entry.abs, path)
+				if err != nil {
+					return nil
+				}
+				// Prefix dengan nama folder agar struktur terjaga
+				relInZip := filepath.Join(entry.name, rel)
+				addFileToZip(path, relInZip)
+				return nil
+			})
+		}
+	}
+}
+
+// HandleMkdir menangani POST /api/mkdir?path=<parent>&name=<nama_folder>
+// Membuat subfolder baru di dalam shared folder.
+func HandleMkdir(cfg *Config) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+			return
+		}
+		// Validasi parent folder
+		_, ok := resolveSafeOrRespond(w, cfg.SharedFolder, r.URL.Query().Get("path"))
+		if !ok {
+			return
+		}
+		name := SanitizeFilename(r.URL.Query().Get("name"))
+		if name == "" {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "nama folder tidak valid"})
+			return
+		}
+		// Validasi path final (parent + name) juga lewat ResolveSafe
+		newPath, err := files.ResolveSafe(cfg.SharedFolder, r.URL.Query().Get("path")+"/"+name)
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "path tidak diizinkan"})
+			return
+		}
+		if err := os.MkdirAll(newPath, 0o755); err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "gagal membuat folder"})
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+	}
 }
 
 // HandleUpload menangani POST /api/upload?path=<relative_folder>

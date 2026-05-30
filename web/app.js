@@ -6,6 +6,10 @@ const state = {
   searchQuery: '',
   allItems: [],
   currentPlayerItem: null, // item yang sedang dibuka di player
+  // Sortir (bisa diatur user, diingat di localStorage)
+  sortBy: localStorage.getItem('sort_by') || 'name',   // 'name' | 'size' | 'date' | 'type'
+  sortDir: localStorage.getItem('sort_dir') || 'asc',  // 'asc' | 'desc'
+  foldersFirst: localStorage.getItem('folders_first') !== 'false', // default true
 };
 
 // ===== DOM refs =====
@@ -188,22 +192,52 @@ async function loadFiles(relPath = '') {
   }
 }
 
+// ===== Sortir =====
+
+// sortItems mengurutkan array item berdasarkan state.sortBy / sortDir / foldersFirst.
+function sortItems(items) {
+  const dir = state.sortDir === 'desc' ? -1 : 1;
+  const arr = items.slice(); // jangan mutasi array asli
+  arr.sort((a, b) => {
+    // Folder selalu di atas kalau foldersFirst aktif (tidak terpengaruh asc/desc)
+    if (state.foldersFirst && a.is_dir !== b.is_dir) {
+      return a.is_dir ? -1 : 1;
+    }
+    let cmp = 0;
+    switch (state.sortBy) {
+      case 'size':
+        cmp = (a.size || 0) - (b.size || 0);
+        break;
+      case 'date':
+        cmp = new Date(a.mod_time) - new Date(b.mod_time);
+        break;
+      case 'type':
+        // urutkan by ekstensi, fallback ke nama
+        cmp = (a.ext || '').localeCompare(b.ext || '', 'id');
+        if (cmp === 0) cmp = a.name.localeCompare(b.name, 'id');
+        break;
+      case 'name':
+      default:
+        cmp = a.name.localeCompare(b.name, 'id', { numeric: true });
+        break;
+    }
+    return cmp * dir;
+  });
+  return arr;
+}
+
 function renderFiles(items) {
   fileList.innerHTML = '';
 
   const q = state.searchQuery.toLowerCase();
   const filtered = q ? items.filter(i => i.name.toLowerCase().includes(q)) : items;
+  const sorted = sortItems(filtered);
 
-  filtered.sort((a, b) => {
-    if (a.is_dir !== b.is_dir) return a.is_dir ? -1 : 1;
-    return a.name.localeCompare(b.name, 'id');
-  });
-
-  if (filtered.length === 0) { emptyMsg.classList.remove('hidden'); return; }
+  if (sorted.length === 0) { emptyMsg.classList.remove('hidden'); return; }
   emptyMsg.classList.add('hidden');
 
   const frag = document.createDocumentFragment();
-  for (const item of filtered) {
+  for (const item of sorted) {
     const li = document.createElement('li');
     li.className = 'file-item';
     li.setAttribute('role', 'listitem');
@@ -226,6 +260,13 @@ function renderFiles(items) {
       progressHTML = `<div class="watch-progress"><div class="watch-progress-fill" style="width:${pct.toFixed(1)}%"></div></div>`;
     }
 
+    // Tombol menu "⋯" untuk semua item (file & folder)
+    const menuBtnHTML = `<button class="file-menu-btn" aria-label="Menu aksi" title="Aksi">⋯</button>`;
+    // Untuk folder: tampilkan panah navigasi + tombol menu
+    const arrowHTML = item.is_dir
+      ? `<span class="file-arrow" aria-hidden="true">›</span>${menuBtnHTML}`
+      : menuBtnHTML;
+
     li.innerHTML = `
       <span class="file-icon" aria-hidden="true">${getIcon(item)}</span>
       <div class="file-info">
@@ -233,10 +274,14 @@ function renderFiles(items) {
         <div class="file-meta">${escapeHtml(meta)}</div>
         ${progressHTML}
       </div>
-      <span class="file-arrow" aria-hidden="true">${item.is_dir ? '›' : '⋯'}</span>
+      ${arrowHTML}
     `;
 
-    li.addEventListener('click', () => {
+    // Tap baris: navigasi folder / buka player / download (perilaku lama)
+    li.addEventListener('click', (ev) => {
+      // Jangan trigger kalau yang diklik adalah tombol menu
+      if (ev.target.closest('.file-menu-btn')) return;
+
       if (item.is_dir) {
         loadFiles(state.currentPath ? state.currentPath + '/' + item.name : item.name);
         return;
@@ -273,9 +318,92 @@ function renderFiles(items) {
       }
     });
 
+    // Tombol menu "⋯": buka action sheet
+    const menuBtn = li.querySelector('.file-menu-btn');
+    if (menuBtn) {
+      menuBtn.addEventListener('click', (ev) => {
+        ev.stopPropagation();
+        openItemMenu(item);
+      });
+    }
+
     frag.appendChild(li);
   }
   fileList.appendChild(frag);
+}
+
+// ===== Action Sheet (menu aksi per item) =====
+
+const actionSheet = $('action-sheet');
+
+function openItemMenu(item) {
+  const title = $('action-sheet-title');
+  const buttons = $('action-sheet-buttons');
+  title.textContent = item.name;
+  buttons.innerHTML = '';
+
+  if (item.is_dir) {
+    // Folder: masuk folder
+    addSheetButton('📁 Buka Folder', () => {
+      closeActionSheet();
+      loadFiles(state.currentPath ? state.currentPath + '/' + item.name : item.name);
+    });
+    // Folder: download sebagai ZIP
+    addSheetButton('🗜 Download (ZIP)', () => {
+      closeActionSheet();
+      downloadFolderZip(item);
+    });
+  } else {
+    // File streamable: bisa diputar
+    if (item.streamable) {
+      addSheetButton('▶ Putar', () => {
+        closeActionSheet();
+        // Pre-flight checks (sama seperti tap baris)
+        if (item.needs_transcode && item.streamable === 'video') {
+          fetch('/api/transcode/status').then(r => r.ok ? r.json() : null).then(status => {
+            if (status && !status.available) showToast('⏳ Server sibuk transcode video lain. Tunggu beberapa detik...');
+          }).catch(() => {});
+        }
+        openPlayer(item);
+      });
+    }
+    // File: download
+    addSheetButton('⬇ Download', () => {
+      closeActionSheet();
+      downloadFile(item);
+      showToast('⬇ Mendownload "' + item.name + '"');
+    });
+  }
+
+  actionSheet.classList.remove('hidden');
+  document.body.style.overflow = 'hidden';
+}
+
+function addSheetButton(label, onClick) {
+  const b = document.createElement('button');
+  b.className = 'action-sheet-btn';
+  b.textContent = label;
+  b.addEventListener('click', onClick);
+  $('action-sheet-buttons').appendChild(b);
+}
+
+function closeActionSheet() {
+  actionSheet.classList.add('hidden');
+  document.body.style.overflow = '';
+}
+
+// ===== Download Folder sebagai ZIP =====
+
+function downloadFolderZip(item) {
+  const path = filePathOf(item);
+  const url = '/api/download-zip?path=' + encodeURIComponent(path);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = item.name + '.zip';
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  showToast('🗜 Menyiapkan ZIP "' + item.name + '"...');
 }
 
 // ===== Breadcrumb =====
@@ -812,7 +940,30 @@ function showToast(msg, isError = false) {
 
 // Header actions
 $('btn-refresh').addEventListener('click', () => loadFiles(state.currentPath));
-$('btn-upload').addEventListener('click', () => uploadInput.click());
+$('btn-upload').addEventListener('click', () => openUploadMenu());
+
+// Upload menu: pilih jenis file
+function openUploadMenu() {
+  const uploadMenuEl = $('upload-menu');
+  if (uploadMenuEl) {
+    uploadMenuEl.classList.toggle('hidden');
+  } else {
+    // Fallback: langsung buka picker semua file
+    uploadInput.click();
+  }
+}
+
+// Tutup upload menu saat klik di luar
+document.addEventListener('click', (e) => {
+  const uploadMenuEl = $('upload-menu');
+  if (uploadMenuEl && !uploadMenuEl.classList.contains('hidden')) {
+    if (!e.target.closest('#upload-menu') && !e.target.closest('#btn-upload')) {
+      uploadMenuEl.classList.add('hidden');
+    }
+  }
+});
+
+const uploadInputMedia = $('upload-input-media');
 
 uploadInput.addEventListener('change', () => {
   if (uploadInput.files.length > 0) {
@@ -820,6 +971,91 @@ uploadInput.addEventListener('change', () => {
     uploadInput.value = '';
   }
 });
+
+if (uploadInputMedia) {
+  uploadInputMedia.addEventListener('change', () => {
+    if (uploadInputMedia.files.length > 0) {
+      uploadFiles(uploadInputMedia.files, state.currentPath);
+      uploadInputMedia.value = '';
+    }
+  });
+}
+
+// Tombol "Semua File" di upload menu
+const btnUploadAll = $('btn-upload-all');
+if (btnUploadAll) {
+  btnUploadAll.addEventListener('click', () => {
+    $('upload-menu').classList.add('hidden');
+    uploadInput.click();
+  });
+}
+
+// Tombol "Foto & Video" di upload menu
+const btnUploadMedia = $('btn-upload-media');
+if (btnUploadMedia) {
+  btnUploadMedia.addEventListener('click', () => {
+    $('upload-menu').classList.add('hidden');
+    if (uploadInputMedia) uploadInputMedia.click();
+    else uploadInput.click();
+  });
+}
+
+// Tombol "Buat Folder Baru" di upload menu
+const btnMkdir = $('btn-mkdir');
+if (btnMkdir) {
+  btnMkdir.addEventListener('click', async () => {
+    $('upload-menu').classList.add('hidden');
+    const name = prompt('Nama folder baru:');
+    if (!name || !name.trim()) return;
+    try {
+      const res = await apiFetch(
+        '/api/mkdir?path=' + encodeURIComponent(state.currentPath) +
+        '&name=' + encodeURIComponent(name.trim()),
+        { method: 'POST' }
+      );
+      const data = await res.json();
+      if (res.ok && data.ok) {
+        showToast('📁 Folder "' + name.trim() + '" dibuat');
+        loadFiles(state.currentPath);
+      } else {
+        showToast('❌ ' + (data.error || 'Gagal membuat folder'), true);
+      }
+    } catch {
+      showToast('❌ Tidak dapat terhubung ke server', true);
+    }
+  });
+}
+
+// Sortir
+const sortBySel = $('sort-by');
+const sortDirBtn = $('sort-dir');
+if (sortBySel) {
+  sortBySel.value = state.sortBy;
+  sortBySel.addEventListener('change', () => {
+    state.sortBy = sortBySel.value;
+    localStorage.setItem('sort_by', state.sortBy);
+    renderFiles(state.allItems);
+  });
+}
+if (sortDirBtn) {
+  sortDirBtn.textContent = state.sortDir === 'asc' ? '↑' : '↓';
+  sortDirBtn.setAttribute('title', state.sortDir === 'asc' ? 'Urutan naik' : 'Urutan turun');
+  sortDirBtn.addEventListener('click', () => {
+    state.sortDir = state.sortDir === 'asc' ? 'desc' : 'asc';
+    localStorage.setItem('sort_dir', state.sortDir);
+    sortDirBtn.textContent = state.sortDir === 'asc' ? '↑' : '↓';
+    sortDirBtn.setAttribute('title', state.sortDir === 'asc' ? 'Urutan naik' : 'Urutan turun');
+    renderFiles(state.allItems);
+  });
+}
+
+// Action sheet: tutup via backdrop & tombol batal
+if (actionSheet) {
+  const backdrop = actionSheet.querySelector('.action-sheet-backdrop');
+  if (backdrop) backdrop.addEventListener('click', closeActionSheet);
+  const cancelBtn = $('action-sheet-cancel');
+  if (cancelBtn) cancelBtn.addEventListener('click', closeActionSheet);
+}
 
 // Search
 searchInput.addEventListener('input', () => {

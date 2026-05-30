@@ -1,6 +1,7 @@
 package server
 
 import (
+	"archive/zip"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -611,6 +612,192 @@ func uniqueDestPath(dir, filename string) string {
 		}
 	}
 	return dest
+}
+
+// HandleDownloadZip menangani GET /api/download-zip?path=<relative_folder>
+// Stream isi folder sebagai arsip ZIP on-the-fly (tidak menyimpan ke disk).
+// Mendukung juga banyak path: ?path=a&path=b → zip gabungan bernama download.zip.
+// HEAD request didukung untuk preflight dari frontend (cek apakah path valid).
+func HandleDownloadZip(cfg *Config) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet && r.Method != http.MethodHead {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		rawPaths := r.URL.Query()["path"]
+		if len(rawPaths) == 0 {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "path wajib diisi"})
+			return
+		}
+
+		// Validasi semua path sebelum mulai streaming
+		type resolvedEntry struct {
+			abs   string
+			isDir bool
+			name  string
+		}
+		entries := make([]resolvedEntry, 0, len(rawPaths))
+		for _, rp := range rawPaths {
+			abs, err := files.ResolveSafe(cfg.SharedFolder, rp)
+			if err != nil {
+				writeJSON(w, http.StatusBadRequest, map[string]string{"error": "path tidak diizinkan: " + rp})
+				return
+			}
+			info, err := os.Stat(abs)
+			if err != nil {
+				writeJSON(w, http.StatusNotFound, map[string]string{"error": "tidak ditemukan: " + rp})
+				return
+			}
+			entries = append(entries, resolvedEntry{abs: abs, isDir: info.IsDir(), name: info.Name()})
+		}
+
+		// Tentukan nama file zip
+		zipName := "download"
+		if len(entries) == 1 {
+			zipName = entries[0].name
+		}
+		safeZipName := SanitizeFilename(zipName)
+		if safeZipName == "" {
+			safeZipName = "download"
+		}
+
+		// Encode nama ZIP dengan RFC 5987 agar nama non-ASCII (Unicode) tampil benar
+		// di semua browser. Kirim keduanya: filename= (ASCII fallback) dan filename*= (UTF-8).
+		asciiName := safeZipName + ".zip"
+		encodedName := url.PathEscape(safeZipName + ".zip")
+		w.Header().Set("Content-Type", "application/zip")
+		w.Header().Set("Content-Disposition",
+			fmt.Sprintf(`attachment; filename="%s"; filename*=UTF-8''%s`, asciiName, encodedName))
+		w.Header().Set("Cache-Control", "no-store")
+
+		// #6: HEAD request hanya butuh header — tidak perlu stream ZIP.
+		if r.Method == http.MethodHead {
+			return
+		}
+
+		zw := zip.NewWriter(w)
+		// #2: tangkap error Close() agar truncated ZIP bisa dideteksi di log.
+		defer func() {
+			if err := zw.Close(); err != nil {
+				log.Printf("download-zip: zw.Close gagal (zip mungkin tidak lengkap): %v", err)
+			}
+		}()
+
+		// alreadyCompressedExt adalah ekstensi yang sudah terkompresi — pakai Store
+		// agar tidak buang CPU untuk kompresi ulang yang hasilnya ~0%.
+		alreadyCompressedExt := map[string]bool{
+			".mp4": true, ".mkv": true, ".avi": true, ".mov": true, ".webm": true,
+			".wmv": true, ".flv": true, ".ts": true,
+			".mp3": true, ".flac": true, ".aac": true, ".ogg": true, ".m4a": true,
+			".jpg": true, ".jpeg": true, ".png": true, ".gif": true, ".webp": true,
+			".zip": true, ".gz": true, ".7z": true, ".rar": true, ".bz2": true,
+		}
+
+		addFileToZip := func(absPath, relInZip string) {
+			f, err := os.Open(absPath)
+			if err != nil {
+				return
+			}
+			defer f.Close()
+			fi, err := f.Stat()
+			if err != nil {
+				return
+			}
+			hdr, err := zip.FileInfoHeader(fi)
+			if err != nil {
+				return
+			}
+			hdr.Name = filepath.ToSlash(relInZip)
+			// #4: gunakan Store untuk format yang sudah terkompresi
+			ext := strings.ToLower(filepath.Ext(fi.Name()))
+			if alreadyCompressedExt[ext] {
+				hdr.Method = zip.Store
+			} else {
+				hdr.Method = zip.Deflate
+			}
+			wr, err := zw.CreateHeader(hdr)
+			if err != nil {
+				return
+			}
+			_, _ = io.Copy(wr, f)
+		}
+
+		for _, entry := range entries {
+			if !entry.isDir {
+				addFileToZip(entry.abs, entry.name)
+				continue
+			}
+			// Folder: walk rekursif
+			_ = filepath.Walk(entry.abs, func(path string, fi os.FileInfo, walkErr error) error {
+				if walkErr != nil {
+					return nil
+				}
+				// #1: skip folder .cache (berisi subtitle cache & history internal)
+				if fi.IsDir() && fi.Name() == ".cache" {
+					return filepath.SkipDir
+				}
+				if fi.IsDir() {
+					return nil
+				}
+				// #3: skip symlink — filepath.Walk pakai Lstat, jadi symlink terdeteksi
+				// lewat mode bit. Ikut symlink bisa bocorkan file di luar shared folder.
+				if fi.Mode()&os.ModeSymlink != 0 {
+					return nil
+				}
+				rel, err := filepath.Rel(entry.abs, path)
+				if err != nil {
+					return nil
+				}
+				// Prefix dengan nama folder agar struktur terjaga
+				relInZip := filepath.Join(entry.name, rel)
+				addFileToZip(path, relInZip)
+				return nil
+			})
+		}
+	}
+}
+
+// TODO: multi-path ZIP (?path=a&path=b) sudah didukung backend di atas,
+// tapi belum ada UI multi-select di frontend. Akan diimplementasikan di Fase 4.
+
+// HandleMkdir menangani POST /api/mkdir?path=<parent>&name=<nama_folder>
+// Membuat subfolder baru di dalam shared folder.
+func HandleMkdir(cfg *Config) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+			return
+		}
+		// #12: resolve parent sekali, pakai hasilnya langsung untuk bangun newPath.
+		parent, ok := resolveSafeOrRespond(w, cfg.SharedFolder, r.URL.Query().Get("path"))
+		if !ok {
+			return
+		}
+		name := SanitizeFilename(r.URL.Query().Get("name"))
+		if name == "" {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "nama folder tidak valid"})
+			return
+		}
+		// SanitizeFilename sudah menghapus semua separator path (/ dan \),
+		// jadi filepath.Join(parent, name) tidak bisa keluar dari parent.
+		// Verifikasi defensif: pastikan tidak ada separator yang tersisa.
+		if strings.ContainsAny(name, `/\`) {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "nama folder tidak valid"})
+			return
+		}
+		newPath := filepath.Join(parent, name)
+		// #8: pakai os.Mkdir (bukan MkdirAll) agar bisa bedakan "sudah ada" vs error lain.
+		if err := os.Mkdir(newPath, 0o755); err != nil {
+			if os.IsExist(err) {
+				writeJSON(w, http.StatusConflict, map[string]string{"error": "folder sudah ada"})
+			} else {
+				writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "gagal membuat folder"})
+			}
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+	}
 }
 
 // HandleUpload menangani POST /api/upload?path=<relative_folder>

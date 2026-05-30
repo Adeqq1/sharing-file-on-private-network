@@ -84,6 +84,16 @@
               </svg>
             </button>
           </div>
+          <div class="sort-control">
+            <label for="sort-by" class="sort-label">Urutkan:</label>
+            <select id="sort-by" class="sort-select" aria-label="Urutkan berdasarkan">
+              <option value="name">Nama</option>
+              <option value="size">Ukuran</option>
+              <option value="date">Tanggal</option>
+              <option value="type">Tipe</option>
+            </select>
+            <button id="sort-dir" class="icon-btn" title="Urutan naik" aria-label="Arah urutan">↑</button>
+          </div>
         </div>
 
         <section class="file-section" aria-live="polite">
@@ -123,6 +133,15 @@
               </div>
               <button id="btn-theme-settings" class="btn btn-secondary" style="min-width:90px">
                 <span id="theme-label-settings">Auto</span>
+              </button>
+            </div>
+            <div class="settings-item">
+              <div>
+                <div class="settings-item-label">Folder di atas</div>
+                <div class="settings-item-desc">Tampilkan folder sebelum file saat sortir</div>
+              </div>
+              <button id="btn-folders-first" class="btn btn-secondary" style="min-width:90px">
+                <span id="folders-first-label">Aktif</span>
               </button>
             </div>
           </div>
@@ -170,7 +189,25 @@
     </nav>
 
     <!-- Upload input (tersembunyi) -->
-    <input type="file" id="upload-input" class="hidden" multiple />
+    <input type="file" id="upload-input" class="hidden" multiple accept="*/*" />
+    <!-- Upload input khusus foto & video -->
+    <input type="file" id="upload-input-media" class="hidden" multiple accept="image/*,video/*" />
+
+    <!-- Upload menu dropdown -->
+    <div id="upload-menu" class="upload-menu hidden" role="menu" aria-label="Pilih jenis upload">
+      <button id="btn-upload-all" class="upload-menu-btn" role="menuitem">
+        <span class="upload-menu-icon">📄</span>
+        <span>Semua File</span>
+      </button>
+      <button id="btn-upload-media" class="upload-menu-btn" role="menuitem">
+        <span class="upload-menu-icon">🖼️</span>
+        <span>Foto &amp; Video</span>
+      </button>
+      <button id="btn-mkdir" class="upload-menu-btn" role="menuitem">
+        <span class="upload-menu-icon">📁</span>
+        <span>Buat Folder Baru</span>
+      </button>
+    </div>
 
     <!-- Upload progress area -->
     <div id="upload-progress-container" class="upload-progress-container hidden"></div>
@@ -292,6 +329,16 @@
 
     <!-- Toast notification -->
     <div id="toast" class="toast hidden" role="status" aria-live="polite"></div>
+
+    <!-- Action Sheet (menu aksi per item) -->
+    <div id="action-sheet" class="action-sheet hidden" role="dialog" aria-modal="true" aria-label="Aksi file">
+      <div class="action-sheet-backdrop"></div>
+      <div class="action-sheet-panel">
+        <div class="action-sheet-title" id="action-sheet-title"></div>
+        <div class="action-sheet-buttons" id="action-sheet-buttons"></div>
+        <button class="action-sheet-cancel" id="action-sheet-cancel">Batal</button>
+      </div>
+    </div>
   </div>
 
   <script src="/cplayer.js"></script>

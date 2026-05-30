@@ -6,6 +6,11 @@ const state = {
   searchQuery: '',
   allItems: [],
   currentPlayerItem: null, // item yang sedang dibuka di player
+  // Sortir (bisa diatur user, diingat di localStorage)
+  sortBy: localStorage.getItem('sort_by') || 'name',      // 'name' | 'size' | 'date' | 'type'
+  sortDir: localStorage.getItem('sort_dir') || 'asc',     // 'asc' | 'desc'
+  // #10: foldersFirst sekarang punya toggle di Settings — tidak lagi dead config
+  foldersFirst: localStorage.getItem('folders_first') !== 'false', // default true
 };
 
 // ===== DOM refs =====
@@ -188,22 +193,56 @@ async function loadFiles(relPath = '') {
   }
 }
 
+// ===== Sortir =====
+
+// sortItems mengurutkan array item berdasarkan state.sortBy / sortDir / foldersFirst.
+// #5: mod_time di-parse sekali ke angka sebelum sort agar tidak ada O(n log n) Date allocation.
+function sortItems(items) {
+  const dir = state.sortDir === 'desc' ? -1 : 1;
+  // Precompute numeric mtime sekali per item
+  const withMtime = items.map(i => ({ i, mtime: i.mod_time ? Date.parse(i.mod_time) : 0 }));
+  withMtime.sort((a, b) => {
+    const ai = a.i, bi = b.i;
+    // Folder selalu di atas kalau foldersFirst aktif (tidak terpengaruh asc/desc)
+    if (state.foldersFirst && ai.is_dir !== bi.is_dir) {
+      return ai.is_dir ? -1 : 1;
+    }
+    let cmp = 0;
+    switch (state.sortBy) {
+      case 'size':
+        cmp = (ai.size || 0) - (bi.size || 0);
+        break;
+      case 'date':
+        // #5: bandingkan angka, bukan new Date()
+        cmp = a.mtime - b.mtime;
+        break;
+      case 'type':
+        // urutkan by ekstensi, fallback ke nama
+        cmp = (ai.ext || '').localeCompare(bi.ext || '', 'id');
+        if (cmp === 0) cmp = ai.name.localeCompare(bi.name, 'id');
+        break;
+      case 'name':
+      default:
+        cmp = ai.name.localeCompare(bi.name, 'id', { numeric: true });
+        break;
+    }
+    return cmp * dir;
+  });
+  return withMtime.map(x => x.i);
+}
+
 function renderFiles(items) {
   fileList.innerHTML = '';
 
   const q = state.searchQuery.toLowerCase();
   const filtered = q ? items.filter(i => i.name.toLowerCase().includes(q)) : items;
+  const sorted = sortItems(filtered);
 
-  filtered.sort((a, b) => {
-    if (a.is_dir !== b.is_dir) return a.is_dir ? -1 : 1;
-    return a.name.localeCompare(b.name, 'id');
-  });
-
-  if (filtered.length === 0) { emptyMsg.classList.remove('hidden'); return; }
+  if (sorted.length === 0) { emptyMsg.classList.remove('hidden'); return; }
   emptyMsg.classList.add('hidden');
 
   const frag = document.createDocumentFragment();
-  for (const item of filtered) {
+  for (const item of sorted) {
     const li = document.createElement('li');
     li.className = 'file-item';
     li.setAttribute('role', 'listitem');
@@ -226,6 +265,13 @@ function renderFiles(items) {
       progressHTML = `<div class="watch-progress"><div class="watch-progress-fill" style="width:${pct.toFixed(1)}%"></div></div>`;
     }
 
+    // Tombol menu "⋯" untuk semua item (file & folder)
+    const menuBtnHTML = `<button class="file-menu-btn" aria-label="Menu aksi" title="Aksi">⋯</button>`;
+    // Untuk folder: tampilkan panah navigasi + tombol menu
+    const arrowHTML = item.is_dir
+      ? `<span class="file-arrow" aria-hidden="true">›</span>${menuBtnHTML}`
+      : menuBtnHTML;
+
     li.innerHTML = `
       <span class="file-icon" aria-hidden="true">${getIcon(item)}</span>
       <div class="file-info">
@@ -233,49 +279,154 @@ function renderFiles(items) {
         <div class="file-meta">${escapeHtml(meta)}</div>
         ${progressHTML}
       </div>
-      <span class="file-arrow" aria-hidden="true">${item.is_dir ? '›' : '⋯'}</span>
+      ${arrowHTML}
     `;
 
-    li.addEventListener('click', () => {
+    // Tap baris: navigasi folder / buka player / download (perilaku lama)
+    li.addEventListener('click', (ev) => {
+      // Jangan trigger kalau yang diklik adalah tombol menu
+      if (ev.target.closest('.file-menu-btn')) return;
+
       if (item.is_dir) {
         loadFiles(state.currentPath ? state.currentPath + '/' + item.name : item.name);
         return;
       }
       if (item.streamable) {
-        // Pre-flight checks untuk video transcode: warning HEVC + cek antrian.
-        // Dijalankan PARALEL dengan openPlayer (tidak await) agar tidak ada delay tap.
-        if (item.needs_transcode && item.streamable === 'video') {
-          // Cek antrian transcode (fire-and-forget)
-          fetch('/api/transcode/status').then(r => r.ok ? r.json() : null).then(status => {
-            if (status && !status.available) {
-              showToast('⏳ Server sibuk transcode video lain. Tunggu beberapa detik...');
-            }
-          }).catch(() => {});
-
-          // Warning HEVC (sekali per session, fire-and-forget)
-          if (!sessionStorage.getItem('cp_hevcWarned')) {
-            fetch('/api/probe?path=' + encodeURIComponent(filePathOf(item)))
-              .then(r => r.ok ? r.json() : null)
-              .then(probe => {
-                if (!probe) return;
-                const vc = (probe.streams || []).find(s => s.type === 'video');
-                if (vc && (vc.codec === 'hevc' || vc.codec === 'h265' || vc.codec === 'av1')) {
-                  sessionStorage.setItem('cp_hevcWarned', '1');
-                  showToast('🎬 Codec ' + vc.codec.toUpperCase() + ' terdeteksi. Transcode butuh CPU besar.');
-                }
-              }).catch(() => {});
-          }
-        }
-        openPlayer(item);
+        playItem(item); // #9: pre-flight terpusat di playItem()
       } else {
         downloadFile(item);
         showToast('⬇ Mendownload "' + item.name + '"');
       }
     });
 
+    // Tombol menu "⋯": buka action sheet
+    const menuBtn = li.querySelector('.file-menu-btn');
+    if (menuBtn) {
+      menuBtn.addEventListener('click', (ev) => {
+        ev.stopPropagation();
+        openItemMenu(item);
+      });
+    }
+
     frag.appendChild(li);
   }
   fileList.appendChild(frag);
+}
+
+// ===== Action Sheet (menu aksi per item) =====
+
+const actionSheet = $('action-sheet');
+
+// #9: playItem adalah single entry-point untuk memutar file — dipakai oleh
+// tap baris DAN action sheet agar pre-flight logic tidak duplikat/drift.
+function playItem(item) {
+  if (item.needs_transcode && item.streamable === 'video') {
+    // Cek antrian transcode (fire-and-forget)
+    fetch('/api/transcode/status').then(r => r.ok ? r.json() : null).then(status => {
+      if (status && !status.available) {
+        showToast('⏳ Server sibuk transcode video lain. Tunggu beberapa detik...');
+      }
+    }).catch(() => {});
+
+    // Warning HEVC (sekali per session, fire-and-forget)
+    if (!sessionStorage.getItem('cp_hevcWarned')) {
+      fetch('/api/probe?path=' + encodeURIComponent(filePathOf(item)))
+        .then(r => r.ok ? r.json() : null)
+        .then(probe => {
+          if (!probe) return;
+          const vc = (probe.streams || []).find(s => s.type === 'video');
+          if (vc && (vc.codec === 'hevc' || vc.codec === 'h265' || vc.codec === 'av1')) {
+            sessionStorage.setItem('cp_hevcWarned', '1');
+            showToast('🎬 Codec ' + vc.codec.toUpperCase() + ' terdeteksi. Transcode butuh CPU besar.');
+          }
+        }).catch(() => {});
+    }
+  }
+  openPlayer(item);
+}
+
+function openItemMenu(item) {
+  const title = $('action-sheet-title');
+  const buttons = $('action-sheet-buttons');
+  title.textContent = item.name;
+  buttons.innerHTML = '';
+
+  if (item.is_dir) {
+    // Folder: masuk folder
+    addSheetButton('📁 Buka Folder', () => {
+      closeActionSheet();
+      loadFiles(state.currentPath ? state.currentPath + '/' + item.name : item.name);
+    });
+    // Folder: download sebagai ZIP
+    addSheetButton('🗜 Download (ZIP)', () => {
+      closeActionSheet();
+      downloadFolderZip(item);
+    });
+  } else {
+    // File streamable: bisa diputar
+    if (item.streamable) {
+      addSheetButton('▶ Putar', () => {
+        closeActionSheet();
+        playItem(item); // #9: pakai playItem() — pre-flight lengkap termasuk HEVC warning
+      });
+    }
+    // File: download
+    addSheetButton('⬇ Download', () => {
+      closeActionSheet();
+      downloadFile(item);
+      showToast('⬇ Mendownload "' + item.name + '"');
+    });
+  }
+
+  actionSheet.classList.remove('hidden');
+  document.body.style.overflow = 'hidden';
+  // #7: push history state agar back button HP bisa tutup action sheet
+  if (!history.state || !history.state.actionSheet) {
+    history.pushState({ actionSheet: true }, '');
+  }
+}
+
+function addSheetButton(label, onClick) {
+  const b = document.createElement('button');
+  b.className = 'action-sheet-btn';
+  b.textContent = label;
+  b.addEventListener('click', onClick);
+  $('action-sheet-buttons').appendChild(b);
+}
+
+function closeActionSheet() {
+  if (actionSheet.classList.contains('hidden')) return;
+  actionSheet.classList.add('hidden');
+  document.body.style.overflow = '';
+}
+
+// ===== Download Folder sebagai ZIP =====
+
+// #6: downloadFolderZip pakai fetch preflight HEAD agar error server (400/404)
+// tidak menghasilkan file .zip berisi teks JSON yang membingungkan user.
+async function downloadFolderZip(item) {
+  const path = filePathOf(item);
+  const url = '/api/download-zip?path=' + encodeURIComponent(path);
+
+  // Preflight: cek apakah server siap sebelum trigger download
+  try {
+    const check = await fetch(url, { method: 'HEAD' });
+    if (!check.ok) {
+      showToast('❌ Gagal menyiapkan ZIP (server error ' + check.status + ')', true);
+      return;
+    }
+  } catch {
+    showToast('❌ Tidak dapat terhubung ke server', true);
+    return;
+  }
+
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = item.name + '.zip';
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  showToast('🗜 Menyiapkan ZIP "' + item.name + '"...');
 }
 
 // ===== Breadcrumb =====
@@ -812,7 +963,30 @@ function showToast(msg, isError = false) {
 
 // Header actions
 $('btn-refresh').addEventListener('click', () => loadFiles(state.currentPath));
-$('btn-upload').addEventListener('click', () => uploadInput.click());
+$('btn-upload').addEventListener('click', () => openUploadMenu());
+
+// Upload menu: pilih jenis file
+function openUploadMenu() {
+  const uploadMenuEl = $('upload-menu');
+  if (uploadMenuEl) {
+    uploadMenuEl.classList.toggle('hidden');
+  } else {
+    // Fallback: langsung buka picker semua file
+    uploadInput.click();
+  }
+}
+
+// Tutup upload menu saat klik di luar
+document.addEventListener('click', (e) => {
+  const uploadMenuEl = $('upload-menu');
+  if (uploadMenuEl && !uploadMenuEl.classList.contains('hidden')) {
+    if (!e.target.closest('#upload-menu') && !e.target.closest('#btn-upload')) {
+      uploadMenuEl.classList.add('hidden');
+    }
+  }
+});
+
+const uploadInputMedia = $('upload-input-media');
 
 uploadInput.addEventListener('change', () => {
   if (uploadInput.files.length > 0) {
@@ -820,6 +994,112 @@ uploadInput.addEventListener('change', () => {
     uploadInput.value = '';
   }
 });
+
+if (uploadInputMedia) {
+  uploadInputMedia.addEventListener('change', () => {
+    if (uploadInputMedia.files.length > 0) {
+      uploadFiles(uploadInputMedia.files, state.currentPath);
+      uploadInputMedia.value = '';
+    }
+  });
+}
+
+// Tombol "Semua File" di upload menu
+const btnUploadAll = $('btn-upload-all');
+if (btnUploadAll) {
+  btnUploadAll.addEventListener('click', () => {
+    $('upload-menu').classList.add('hidden');
+    uploadInput.click();
+  });
+}
+
+// Tombol "Foto & Video" di upload menu
+const btnUploadMedia = $('btn-upload-media');
+if (btnUploadMedia) {
+  btnUploadMedia.addEventListener('click', () => {
+    $('upload-menu').classList.add('hidden');
+    if (uploadInputMedia) uploadInputMedia.click();
+    else uploadInput.click();
+  });
+}
+
+// Tombol "Buat Folder Baru" di upload menu
+const btnMkdir = $('btn-mkdir');
+if (btnMkdir) {
+  btnMkdir.addEventListener('click', async () => {
+    $('upload-menu').classList.add('hidden');
+    const name = prompt('Nama folder baru:');
+    if (!name || !name.trim()) return;
+    try {
+      const res = await apiFetch(
+        '/api/mkdir?path=' + encodeURIComponent(state.currentPath) +
+        '&name=' + encodeURIComponent(name.trim()),
+        { method: 'POST' }
+      );
+      const data = await res.json();
+      if (res.ok && data.ok) {
+        showToast('📁 Folder "' + name.trim() + '" dibuat');
+        loadFiles(state.currentPath);
+      } else if (res.status === 409) {
+        // #8: server pakai os.Mkdir — 409 = folder sudah ada
+        showToast('⚠️ Folder "' + name.trim() + '" sudah ada', true);
+      } else {
+        showToast('❌ ' + (data.error || 'Gagal membuat folder'), true);
+      }
+    } catch {
+      showToast('❌ Tidak dapat terhubung ke server', true);
+    }
+  });
+}
+
+// Sortir
+const sortBySel = $('sort-by');
+const sortDirBtn = $('sort-dir');
+if (sortBySel) {
+  sortBySel.value = state.sortBy;
+  sortBySel.addEventListener('change', () => {
+    state.sortBy = sortBySel.value;
+    localStorage.setItem('sort_by', state.sortBy);
+    renderFiles(state.allItems);
+  });
+}
+if (sortDirBtn) {
+  sortDirBtn.textContent = state.sortDir === 'asc' ? '↑' : '↓';
+  sortDirBtn.setAttribute('title', state.sortDir === 'asc' ? 'Urutan naik' : 'Urutan turun');
+  sortDirBtn.addEventListener('click', () => {
+    state.sortDir = state.sortDir === 'asc' ? 'desc' : 'asc';
+    localStorage.setItem('sort_dir', state.sortDir);
+    sortDirBtn.textContent = state.sortDir === 'asc' ? '↑' : '↓';
+    sortDirBtn.setAttribute('title', state.sortDir === 'asc' ? 'Urutan naik' : 'Urutan turun');
+    renderFiles(state.allItems);
+  });
+}
+
+// Action sheet: tutup via backdrop & tombol batal
+if (actionSheet) {
+  const backdrop = actionSheet.querySelector('.action-sheet-backdrop');
+  if (backdrop) backdrop.addEventListener('click', closeActionSheet);
+  const cancelBtn = $('action-sheet-cancel');
+  if (cancelBtn) cancelBtn.addEventListener('click', closeActionSheet);
+}
+
+// #10: toggle "Folder di atas" di Settings
+const btnFoldersFirst = $('btn-folders-first');
+const foldersFirstLabel = $('folders-first-label');
+function updateFoldersFirstUI() {
+  if (foldersFirstLabel) foldersFirstLabel.textContent = state.foldersFirst ? 'Aktif' : 'Nonaktif';
+  if (btnFoldersFirst) btnFoldersFirst.classList.toggle('btn-primary', state.foldersFirst);
+  if (btnFoldersFirst) btnFoldersFirst.classList.toggle('btn-secondary', !state.foldersFirst);
+}
+updateFoldersFirstUI();
+if (btnFoldersFirst) {
+  btnFoldersFirst.addEventListener('click', () => {
+    state.foldersFirst = !state.foldersFirst;
+    localStorage.setItem('folders_first', state.foldersFirst ? 'true' : 'false');
+    updateFoldersFirstUI();
+    renderFiles(state.allItems);
+  });
+}
 
 // Search
 searchInput.addEventListener('input', () => {
@@ -889,12 +1169,22 @@ playerPip.addEventListener('click', async () => {
 
 // Tombol back fisik HP
 window.addEventListener('popstate', () => {
+  // #7: back button tutup action sheet dulu sebelum player
+  if (actionSheet && !actionSheet.classList.contains('hidden')) {
+    closeActionSheet();
+    return;
+  }
   if (!playerOverlay.classList.contains('hidden')) closePlayer();
 });
 
 // Keyboard shortcuts global
 document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape') {
+    // #7: Escape tutup action sheet dulu
+    if (actionSheet && !actionSheet.classList.contains('hidden')) {
+      closeActionSheet();
+      return;
+    }
     if (!playerOverlay.classList.contains('hidden')) closePlayer();
   }
 });

@@ -3,7 +3,6 @@ package server
 import (
 	"fmt"
 	"lan-server/internal/history"
-	"lan-server/internal/live"
 	"log"
 	"mime"
 	"net/http"
@@ -59,13 +58,6 @@ func New(cfg *Config) http.Handler {
 	mux.HandleFunc("/api/history/update", HandleHistoryUpdate(cfg, historyStore))
 	mux.HandleFunc("/api/history/delete", HandleHistoryDelete(historyStore))
 	mux.HandleFunc("/api/history/clear", HandleHistoryClear(historyStore))
-
-	// Live stream routes
-	hub := live.NewHub()
-	mux.HandleFunc("/api/live/status", HandleLiveStatus(hub))
-	mux.HandleFunc("/api/live/signal", HandleLiveSignal(hub))
-	mux.HandleFunc("/api/live/events", HandleLiveEvents(hub))
-	mux.HandleFunc("/api/live/stop", HandleLiveStop(hub))
 
 	// Static files (web/)
 	staticFS := http.FileServer(http.Dir("web"))

@@ -1,6 +1,6 @@
 # LAN Hub 📡
 
-Web service ringan berbasis **Go** untuk berbagi file, streaming video/audio, dan live screen-share antara laptop dan HP/tablet di jaringan LAN yang sama. Akses lewat browser HP, tidak perlu install app.
+Web service ringan berbasis **Go** untuk berbagi file dan streaming video/audio antara laptop dan HP/tablet di jaringan LAN yang sama. Akses lewat browser HP, tidak perlu install app.
 
 > Cocok untuk pindah file dari laptop ke HP tanpa colok kabel atau pakai cloud, sambil bisa nonton MKV/AVI HEVC langsung di HP tanpa download.
 
@@ -16,7 +16,6 @@ Web service ringan berbasis **Go** untuk berbagi file, streaming video/audio, da
 | ⏩ **Seeking transcoded video** | Lompat ke menit tertentu pada video transcode lewat query param `?t=` (input seek ffmpeg) |
 | 💬 **Subtitle** | Auto-detect file `.srt`/`.vtt` di folder yang sama, plus embedded subtitle (MKV/MP4) di-extract via ffmpeg dan di-cache ke disk |
 | 🎮 **Custom video player** | YouTube-like: gesture mobile, speed control, fullscreen + auto-landscape, CC, queue auto-next, resume position |
-| 📡 **Live screen share** | Broadcast layar laptop ke HP via WebRTC P2P (signaling lewat SSE) |
 | ⬇️ **Download** | Tap file → download ke HP dengan satu sentuhan |
 | ⬆️ **Upload** | Upload file dari HP ke laptop, batas 200 MB per file, auto-rename kalau bentrok |
 | 🔒 **PIN opsional** | PIN 4 digit acak per startup dengan rate limit 5 percobaan / 5 menit |
@@ -43,8 +42,6 @@ Web service ringan berbasis **Go** untuk berbagi file, streaming video/audio, da
 **Frontend:**
 - HTML5 + CSS3 + Vanilla JavaScript (no framework, no build tool)
 - HTML5 Video API + Media Source extensions (untuk fragmented MP4 streaming)
-- WebRTC (untuk fitur live stream)
-- Server-Sent Events (untuk signaling WebRTC)
 - LocalStorage (untuk resume position, theme, volume)
 
 ---
@@ -172,19 +169,14 @@ project-lan-serverPrivate/
 │   │   ├── cache.go                # Cache hasil extract di disk (path-based key)
 │   │   └── embed_test.go
 │   │
-│   ├── netinfo/
-│   │   └── netinfo.go              # Deteksi IP LAN, skip adapter virtual
-│   │
-│   └── live/                       # Live stream WebRTC
-│       ├── live.go                 # Hub signaling: broadcaster + viewer registry
-│       └── live_test.go
+│   └── netinfo/
+│       └── netinfo.go              # Deteksi IP LAN, skip adapter virtual
 │
 ├── web/                            # Frontend (di-serve via http.FileServer)
 │   ├── index.html                  # Single page app
 │   ├── style.css                   # Mobile-first, dark mode, custom player styling
 │   ├── app.js                      # State, file listing, upload/download, player launcher
-│   ├── cplayer.js                  # Custom video player (gesture, fullscreen, seek, CC)
-│   └── live.js                     # WebRTC client (broadcaster + viewer)
+│   └── cplayer.js                  # Custom video player (gesture, fullscreen, seek, CC)
 │
 └── cache/                          # Cache subtitle embedded (auto-cleanup > 7 hari)
     └── embedded_subtitle/
@@ -208,7 +200,6 @@ HP/Browser ─── HTTP ───► main.go ──► server.New() ──► 
                                               │  /api/upload                                          │
                                               │  /api/download                                        │
                                               │  /api/login                                           │
-                                              │  /api/live/*    ──► live.Hub (SSE signaling)         │
                                               └───────────────────────────────────────────────────────┘
 ```
 
@@ -278,15 +269,6 @@ Semua endpoint butuh cookie `auth` (HTTP-only, 24 jam) jika `pin_enabled: true`.
 |---|---|---|---|
 | `GET` | `/api/subtitles` | `?path=<video-rel>` | `[{ lang, label, source, track? }]` — list eksternal + embedded subtitle |
 | `GET` | `/api/subtitle` | `?path=<video-rel>&lang=<id\|en\|embed:N\|...>` | WebVTT body (`text/vtt; charset=utf-8`). SRT auto-convert. Embedded di-extract via ffmpeg dan cached. |
-
-### Live stream (WebRTC signaling)
-
-| Method | Endpoint | Query / Body | Response |
-|---|---|---|---|
-| `GET` | `/api/live/status` | — | `{ active, viewers, started_at? }` |
-| `GET` | `/api/live/events` | `?peer_id=<id>&role=<broadcaster\|viewer>` | SSE stream — server-sent events untuk WebRTC offer/answer/ICE |
-| `POST` | `/api/live/signal` | `{ from, to, type, ... }` | `{ ok: true }` — forward signal ke peer tujuan |
-| `POST` | `/api/live/stop` | `{ peer_id }` | `{ ok: true }` |
 
 ### Auth
 
@@ -361,7 +343,6 @@ Output yang diharapkan:
 ?       lan-server      [no test files]
 ok      lan-server/internal/embed       0.180s
 ?       lan-server/internal/files       [no test files]
-ok      lan-server/internal/live        0.060s
 ok      lan-server/internal/media       0.030s
 ?       lan-server/internal/netinfo     [no test files]
 ?       lan-server/internal/server      [no test files]
@@ -459,12 +440,6 @@ Binary standalone, bisa dipindah ke folder lain asalkan `config.json` dan folder
 - Multi-bahasa: pakai pola `film.id.srt`, `film.en.srt` (atau separator `.`, `_`, `-`).
 - Embedded subtitle di MKV/MP4 di-extract otomatis via ffmpeg dan di-cache (max 7 hari).
 - Toggle via tombol gear di player → **Subtitle**.
-
-### Live screen share
-1. Buka tab **Live** di header.
-2. Klik **Mulai Broadcast** di laptop.
-3. Browser HP akan otomatis menampilkan stream lewat WebRTC P2P.
-4. Latency sub-detik (di LAN), tidak ada server transcoding.
 
 ### Login PIN (opsional)
 Aktifkan `pin_enabled: true` di `config.json`. PIN baru tercetak di console setiap startup. Sesi tersimpan 24 jam. 5 percobaan gagal → kunci 5 menit.

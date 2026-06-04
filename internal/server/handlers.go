@@ -9,7 +9,6 @@ import (
 	"lan-server/internal/embed"
 	"lan-server/internal/files"
 	"lan-server/internal/history"
-	"lan-server/internal/live"
 	"lan-server/internal/media"
 	"lan-server/internal/subtitle"
 	"lan-server/internal/transcode"
@@ -21,7 +20,6 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-	"time"
 )
 
 // writeJSON menulis response JSON dengan status code tertentu.
@@ -1061,134 +1059,6 @@ func HandleHistoryClear(store *history.Store) http.HandlerFunc {
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
-	}
-}
-
-// ===== Live Stream Handlers =====
-
-// HandleLiveStatus menangani GET /api/live/status
-func HandleLiveStatus(hub *live.Hub) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodGet {
-			writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
-			return
-		}
-		active := hub.IsActive()
-		resp := map[string]any{
-			"active":  active,
-			"viewers": hub.ViewerCount(),
-		}
-		if active {
-			resp["started_at"] = hub.StartedAt().Format("2006-01-02T15:04:05Z07:00")
-		}
-		w.Header().Set("Cache-Control", "no-cache")
-		writeJSON(w, http.StatusOK, resp)
-	}
-}
-
-// HandleLiveSignal menangani POST /api/live/signal
-func HandleLiveSignal(hub *live.Hub) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost {
-			writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
-			return
-		}
-		var sig live.Signal
-		if err := json.NewDecoder(r.Body).Decode(&sig); err != nil {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "body tidak valid"})
-			return
-		}
-		if sig.From == "" || sig.To == "" || sig.Type == "" {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "from, to, dan type wajib diisi"})
-			return
-		}
-		hub.Forward(sig)
-		writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
-	}
-}
-
-// HandleLiveEvents menangani GET /api/live/events?peer_id=<id>&role=<broadcaster|viewer>
-func HandleLiveEvents(hub *live.Hub) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodGet {
-			writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
-			return
-		}
-
-		id := r.URL.Query().Get("peer_id")
-		roleStr := r.URL.Query().Get("role")
-		if id == "" || (roleStr != "broadcaster" && roleStr != "viewer") {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "peer_id dan role (broadcaster|viewer) wajib diisi"})
-			return
-		}
-
-		role := live.Role(roleStr)
-		ch, err := hub.Join(role, id)
-		if err != nil {
-			writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
-			return
-		}
-		defer hub.Leave(id)
-
-		w.Header().Set("Content-Type", "text/event-stream")
-		w.Header().Set("Cache-Control", "no-cache")
-		w.Header().Set("Connection", "keep-alive")
-		w.Header().Set("X-Accel-Buffering", "no")
-
-		flusher, ok := w.(http.Flusher)
-		if !ok {
-			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "streaming tidak didukung"})
-			return
-		}
-
-		fmt.Fprintf(w, ": connected\n\n")
-		flusher.Flush()
-
-		// Heartbeat setiap 20 detik agar proxy/firewall tidak drop koneksi idle.
-		heartbeat := time.NewTicker(20 * time.Second)
-		defer heartbeat.Stop()
-
-		ctx := r.Context()
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-heartbeat.C:
-				fmt.Fprintf(w, ":ka\n\n")
-				flusher.Flush()
-			case sig, open := <-ch:
-				if !open {
-					fmt.Fprintf(w, "event: signal\ndata: {\"type\":\"bye\",\"from\":\"server\"}\n\n")
-					flusher.Flush()
-					return
-				}
-				data, err := json.Marshal(sig)
-				if err != nil {
-					continue
-				}
-				fmt.Fprintf(w, "event: signal\ndata: %s\n\n", data)
-				flusher.Flush()
-			}
-		}
-	}
-}
-
-// HandleLiveStop menangani POST /api/live/stop
-func HandleLiveStop(hub *live.Hub) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost {
-			writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
-			return
-		}
-		var body struct {
-			PeerID string `json:"peer_id"`
-		}
-		if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.PeerID == "" {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "peer_id wajib diisi"})
-			return
-		}
-		hub.Leave(body.PeerID)
 		writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 	}
 }

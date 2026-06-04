@@ -38,9 +38,6 @@
         <nav class="top-tabs" id="top-tabs" aria-label="Navigasi utama">
           <a href="#home" class="top-tab active" data-tab="home">File</a>
           <a href="#history" class="top-tab" data-tab="history">Lanjut Nonton</a>
-          <a href="#live" class="top-tab" data-tab="live">
-            Live <span class="live-badge hidden" id="live-nav-badge" aria-hidden="true"></span>
-          </a>
           <a href="#settings" class="top-tab" data-tab="settings">Setelan</a>
         </nav>
 
@@ -101,11 +98,6 @@
           <ul id="file-list" class="file-list" role="list"></ul>
           <p id="empty-msg" class="empty-msg hidden">Folder ini kosong.</p>
         </section>
-      </section>
-
-      <!-- ===== Live Tab ===== -->
-      <section data-tab="live" class="hidden">
-        <div id="live-container" class="live-container"></div>
       </section>
 
       <!-- ===== History Tab ===== -->
@@ -172,13 +164,6 @@
           <path d="M13 3a9 9 0 1 0 9 9h-2a7 7 0 1 1-7-7v3l4-4-4-4v3z"/>
         </svg>
         <span>Lanjut</span>
-      </a>
-      <a href="#live" class="bottom-nav-item" data-tab="live">
-        <svg viewBox="0 0 24 24" width="22" height="22" fill="currentColor">
-          <circle cx="12" cy="12" r="4"/>
-          <path d="M6.34 6.34a8 8 0 0 0 0 11.32M17.66 6.34a8 8 0 0 1 0 11.32M3.51 3.51a12 12 0 0 0 0 16.97M20.49 3.51a12 12 0 0 1 0 16.97" stroke="currentColor" stroke-width="1.5" fill="none"/>
-        </svg>
-        <span>Live</span>
       </a>
       <a href="#settings" class="bottom-nav-item" data-tab="settings">
         <svg viewBox="0 0 24 24" width="22" height="22" fill="currentColor">
@@ -343,6 +328,5 @@
 
   <script src="/cplayer.js"></script>
   <script src="/app.js"></script>
-  <script src="/live.js"></script>
 </body>
 </html>

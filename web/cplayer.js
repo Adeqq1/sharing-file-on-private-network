@@ -33,6 +33,9 @@ const cplayer = {
     // ── Burn-in subtitle (PGS) ──
     burnSubIndex: -1,        // stream index PGS yang sedang di-burn-in (-1 = tidak ada)
     _subtitleBlobUrl: null,  // Blob URL subtitle aktif (untuk revoke saat ganti/close)
+    _activeTextTrack: null,  // text track aktif untuk sinkronisasi subtitle overlay
+    _cueChangeHandler: null, // handler cuechange aktif agar bisa dicabut saat ganti track
+    iosNativeFullscreen: false,
   },
   abort: null, // AbortController untuk listener per-video
 };
@@ -77,6 +80,7 @@ function initCplayer() {
     rippleLeft:   document.getElementById('cplayer-ripple-left'),
     rippleRight:  document.getElementById('cplayer-ripple-right'),
     spinner:      document.getElementById('player-spinner'),
+    subtitle:     document.getElementById('cplayer-subtitle-overlay'),
   };
 
   // Restore preferences dari localStorage
@@ -244,6 +248,17 @@ function setupVideoEvents() {
     if (!document.fullscreenElement) {
       unlockOrientation();
     }
+  });
+
+  // iPhone/iOS Safari memakai native fullscreen player di luar DOM overlay kita.
+  // Saat fullscreen native aktif, fallback ke subtitle native agar subtitle tetap muncul.
+  v.addEventListener('webkitbeginfullscreen', () => {
+    cplayer.state.iosNativeFullscreen = true;
+    syncSubtitlePresentation();
+  });
+  v.addEventListener('webkitendfullscreen', () => {
+    cplayer.state.iosNativeFullscreen = false;
+    syncSubtitlePresentation();
   });
 }
 
@@ -648,6 +663,8 @@ async function setupSubtitle(item, filePathFn) {
 
   // Hapus track lama
   cplayer.video.querySelectorAll('track').forEach(t => t.remove());
+  detachSubtitleOverlayTrack();
+  hideSubtitleOverlay();
   cplayer.state.availableSubs = [];
   cplayer.state.currentLang = '';
 
@@ -724,6 +741,8 @@ function switchSubtitleEntry(entry) {
 
   // Hapus track lama (fix poin #6)
   cplayer.video.querySelectorAll('track').forEach(t => t.remove());
+  detachSubtitleOverlayTrack();
+  hideSubtitleOverlay();
   // Cabut Blob URL lama agar tidak memory leak
   if (cplayer.state._subtitleBlobUrl) {
     URL.revokeObjectURL(cplayer.state._subtitleBlobUrl);
@@ -793,13 +812,17 @@ function switchSubtitleEntry(entry) {
       track.label = entry.label || 'Subtitle';
       track.srclang = entry.lang || 'und';
       track.src = blobUrl;
+      track.default = true;
       cplayer.video.appendChild(track);
 
       // Set mode = 'showing' langsung setelah append.
       // Dengan Blob URL, data sudah ada di memori — tidak ada network fetch,
       // sehingga ini bekerja reliably di semua browser termasuk iOS Safari.
       const tt = cplayer.video.textTracks[cplayer.video.textTracks.length - 1];
-      if (tt) tt.mode = 'showing';
+      if (tt) {
+        tt.mode = 'hidden';
+        attachSubtitleOverlayTrack(tt);
+      }
       console.log('[sub] track appended, mode:', tt && tt.mode);
 
       // Toast konfirmasi subtitle berhasil dimuat (Tahap 6)
@@ -843,10 +866,129 @@ function toggleCC(forceState) {
   const tracks = cplayer.video.textTracks;
   if (!tracks || tracks.length === 0) {
     cplayer.state.ccEnabled = newState;
+    hideSubtitleOverlay();
     return;
   }
   cplayer.state.ccEnabled = newState;
-  tracks[tracks.length - 1].mode = newState ? 'showing' : 'hidden';
+  syncSubtitlePresentation();
+}
+
+function cueTextToHTML(text) {
+  const template = document.createElement('template');
+  template.innerHTML = String(text || '');
+
+  const allowed = new Set(['B', 'I', 'U', 'BR']);
+  const sanitizeNode = (node) => {
+    if (node.nodeType === Node.TEXT_NODE) {
+      return document.createTextNode(node.textContent || '');
+    }
+    if (node.nodeType !== Node.ELEMENT_NODE) {
+      return document.createDocumentFragment();
+    }
+
+    const tag = node.tagName.toUpperCase();
+    if (!allowed.has(tag)) {
+      const frag = document.createDocumentFragment();
+      node.childNodes.forEach(child => frag.appendChild(sanitizeNode(child)));
+      return frag;
+    }
+
+    const el = document.createElement(tag.toLowerCase());
+    node.childNodes.forEach(child => el.appendChild(sanitizeNode(child)));
+    return el;
+  };
+
+  const out = document.createElement('div');
+  template.content.childNodes.forEach(node => out.appendChild(sanitizeNode(node)));
+  return out.innerHTML.replace(/\n/g, '<br>');
+}
+
+function hideSubtitleOverlay() {
+  if (!cplayer.dom.subtitle) return;
+  cplayer.dom.subtitle.innerHTML = '';
+  cplayer.dom.subtitle.classList.add('hidden');
+}
+
+function activeSubtitleTrack() {
+  const tracks = cplayer.video?.textTracks;
+  if (!tracks || tracks.length === 0) return null;
+  return tracks[tracks.length - 1];
+}
+
+function syncSubtitlePresentation() {
+  const track = activeSubtitleTrack();
+  if (!track) {
+    hideSubtitleOverlay();
+    return;
+  }
+
+  if (!cplayer.state.ccEnabled) {
+    track.mode = 'hidden';
+    hideSubtitleOverlay();
+    return;
+  }
+
+  if (cplayer.state.iosNativeFullscreen) {
+    track.mode = 'showing';
+    hideSubtitleOverlay();
+    return;
+  }
+
+  track.mode = 'hidden';
+  renderActiveCueOverlay();
+}
+
+function renderActiveCueOverlay() {
+  if (!cplayer.dom.subtitle) return;
+  if (!cplayer.state.ccEnabled || !cplayer.state._activeTextTrack) {
+    hideSubtitleOverlay();
+    return;
+  }
+
+  const activeCues = cplayer.state._activeTextTrack.activeCues;
+  if (!activeCues || activeCues.length === 0) {
+    hideSubtitleOverlay();
+    return;
+  }
+
+  const lines = [];
+  for (let i = 0; i < activeCues.length; i++) {
+    const cue = activeCues[i];
+    const text = typeof cue.text === 'string' ? cue.text.trim() : '';
+    if (text) lines.push(cueTextToHTML(text));
+  }
+
+  if (lines.length === 0) {
+    hideSubtitleOverlay();
+    return;
+  }
+
+  cplayer.dom.subtitle.innerHTML = lines.join('<br>');
+  cplayer.dom.subtitle.classList.remove('hidden');
+}
+
+function detachSubtitleOverlayTrack() {
+  const track = cplayer.state._activeTextTrack;
+  const handler = cplayer.state._cueChangeHandler;
+  if (track && handler) {
+    try {
+      track.removeEventListener('cuechange', handler);
+    } catch (_) {
+      // ignore - some browsers use EventTarget without strict remove semantics
+    }
+  }
+  cplayer.state._activeTextTrack = null;
+  cplayer.state._cueChangeHandler = null;
+}
+
+function attachSubtitleOverlayTrack(track) {
+  if (!track) return;
+  detachSubtitleOverlayTrack();
+  const handler = () => renderActiveCueOverlay();
+  cplayer.state._activeTextTrack = track;
+  cplayer.state._cueChangeHandler = handler;
+  track.addEventListener('cuechange', handler);
+  syncSubtitlePresentation();
 }
 
 // ===== Keyboard Shortcuts =====
@@ -1221,12 +1363,16 @@ function _flushTranscodeSeek() {
       track.label   = activeSubEntry.label || 'Subtitle';
       track.srclang = activeSubEntry.lang  || 'und';
       track.src     = activeBlobUrl;
+      track.default = true;
       cplayer.video.appendChild(track);
 
       cplayer.state._subtitleBlobUrl = activeBlobUrl;
 
       const tt = cplayer.video.textTracks[cplayer.video.textTracks.length - 1];
-      if (tt) tt.mode = 'showing';
+      if (tt) {
+        tt.mode = 'hidden';
+        attachSubtitleOverlayTrack(tt);
+      }
     }, { once: true });
   }
 
@@ -1416,6 +1562,8 @@ function resetCplayer() {
   if (cplayer.dom.rippleLeft)  cplayer.dom.rippleLeft.classList.add('hidden');
   if (cplayer.dom.rippleRight) cplayer.dom.rippleRight.classList.add('hidden');
   if (cplayer.dom.hoverTime) cplayer.dom.hoverTime.classList.add('hidden');
+  hideSubtitleOverlay();
+  detachSubtitleOverlayTrack();
 
   if (cplayer.video) cplayer.video.style.filter = '';
 
@@ -1441,6 +1589,7 @@ function resetCplayer() {
   cplayer.state.queueIndex = -1;
   cplayer.state.fsTransition = false; // reset flag transisi fullscreen
   cplayer.state.currentSubIdx = -1;  // reset index subtitle aktif
+  cplayer.state.iosNativeFullscreen = false;
 
   // Reset state seek transcode
   cplayer.state.transcodeOffset = 0;

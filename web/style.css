@@ -630,7 +630,40 @@ body {
 .popup-back { color: rgba(255,255,255,.6); font-weight: 600; border-bottom: 1px solid rgba(255,255,255,.1); margin-bottom: 4px; padding-bottom: 10px !important; }
 .cplayer.hide-controls .cplayer-popup,
 .cplayer.hide-controls .cplayer-hover-time { opacity: 0; pointer-events: none; }
-.cplayer-video::cue { background: rgba(0,0,0,.75); color: #fff; font-size: .9em; padding: 2px 6px; border-radius: 3px; }
+.cplayer-subtitle-overlay {
+  position: absolute;
+  left: 6%;
+  right: 6%;
+  bottom: 44px;
+  z-index: 9;
+  color: #fff;
+  font-size: 2rem;
+  line-height: 1.35;
+  text-align: center;
+  pointer-events: none;
+  white-space: pre-line;
+  text-shadow:
+    -1px -1px 0 #000,
+     1px -1px 0 #000,
+    -1px  1px 0 #000,
+     1px  1px 0 #000;
+}
+.cplayer-video::cue {
+  background: transparent;
+  color: #fff;
+  font-size: .9em;
+  text-shadow:
+    -1px -1px 0 #000,
+     1px -1px 0 #000,
+    -1px  1px 0 #000,
+     1px  1px 0 #000;
+}
+@media (min-width: 768px) {
+  .cplayer-subtitle-overlay {
+    bottom: 60px;
+    font-size: 2.1rem;
+  }
+}
 .cplayer-ripple {
   position: absolute; width: 120px; height: 120px; border-radius: 50%;
   background: rgba(255,255,255,.2); pointer-events: none;

@@ -258,7 +258,7 @@ function renderFiles(items) {
 
     // Progress bar untuk video yang ada di history
     const fullPath = state.currentPath ? state.currentPath + '/' + item.name : item.name;
-    const histEntry = watchHistoryByPath[fullPath];
+    const histEntry = window.watchHistoryByPath?.[fullPath];
     let progressHTML = '';
     if (histEntry && histEntry.duration_sec > 0 && !histEntry.completed) {
       const pct = Math.min(100, (histEntry.position_sec / histEntry.duration_sec) * 100);
@@ -1203,19 +1203,19 @@ $('btn-login').addEventListener('click', submitPIN);
 
 // ===== Watch History =====
 
-let watchHistoryByPath = {}; // cache: { "<rel-path>": Entry }
+window.watchHistoryByPath = {}; // cache: { "<rel-path>": Entry }
 
 async function loadHistoryCache() {
   try {
     const res = await fetch('/api/history');
-    if (!res.ok) { watchHistoryByPath = {}; return; }
+    if (!res.ok) { window.watchHistoryByPath = {}; return; }
     const list = await res.json();
-    watchHistoryByPath = {};
+    window.watchHistoryByPath = {};
     for (const e of (list || [])) {
-      watchHistoryByPath[e.path] = e;
+      window.watchHistoryByPath[e.path] = e;
     }
   } catch (_) {
-    watchHistoryByPath = {};
+    window.watchHistoryByPath = {};
   }
 }
 
@@ -1225,7 +1225,7 @@ async function renderHistory() {
   if (!ul) return;
   ul.innerHTML = '';
   await loadHistoryCache();
-  const list = Object.values(watchHistoryByPath).sort((a, b) =>
+  const list = Object.values(window.watchHistoryByPath || {}).sort((a, b) =>
     new Date(b.watched_at) - new Date(a.watched_at)
   );
   if (list.length === 0) {

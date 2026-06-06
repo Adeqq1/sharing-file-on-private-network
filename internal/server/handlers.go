@@ -22,6 +22,14 @@ import (
 	"strings"
 )
 
+// fileWithoutConn membungkus io.ReadSeeker untuk menyembunyikan interface
+// syscall.Conn dari *os.File. Ini mencegah Go memakai TransmitFile di Windows,
+// yang bisa terputus di sekitar 2 GiB untuk file besar, sambil tetap
+// mempertahankan dukungan Range via http.ServeContent.
+type fileWithoutConn struct {
+	io.ReadSeeker
+}
+
 // writeJSON menulis response JSON dengan status code tertentu.
 func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
@@ -67,7 +75,7 @@ func HandleFiles(cfg *Config) http.HandlerFunc {
 
 // HandleStream menangani GET /api/stream?path=<relative>
 // TIDAK set Content-Disposition attachment — browser memutar langsung.
-// http.ServeFile otomatis handle Range request untuk seek.
+// http.ServeContent tetap handle Range request untuk seek.
 func HandleStream(cfg *Config) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet && r.Method != http.MethodHead {
@@ -100,11 +108,22 @@ func HandleStream(cfg *Config) http.HandlerFunc {
 		}
 
 		w.Header().Set("Cache-Control", "private, max-age=300")
-		// Accept-Ranges sudah di-set otomatis oleh http.ServeFile, tapi kita
+		// Accept-Ranges sudah di-handle oleh http.ServeContent, tapi kita
 		// set eksplisit sebagai hint ke browser bahwa file ini seekable.
 		w.Header().Set("Accept-Ranges", "bytes")
 		w.Header().Set("X-Content-Type-Options", "nosniff")
-		http.ServeFile(w, r, target)
+
+		file, err := os.Open(target)
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "gagal membuka file"})
+			return
+		}
+		defer file.Close()
+		if fileInfo, err := file.Stat(); err == nil {
+			info = fileInfo
+		}
+
+		http.ServeContent(w, r, info.Name(), info.ModTime(), fileWithoutConn{file})
 	}
 }
 
@@ -590,8 +609,18 @@ func HandleDownload(cfg *Config) http.HandlerFunc {
 			return
 		}
 
+		file, err := os.Open(target)
+		if err != nil {
+			http.Error(w, "gagal membuka file", http.StatusInternalServerError)
+			return
+		}
+		defer file.Close()
+		if fileInfo, err := file.Stat(); err == nil {
+			info = fileInfo
+		}
+
 		w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, info.Name()))
-		http.ServeFile(w, r, target)
+		http.ServeContent(w, r, info.Name(), info.ModTime(), fileWithoutConn{file})
 	}
 }
 

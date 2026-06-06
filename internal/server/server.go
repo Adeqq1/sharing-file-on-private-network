@@ -70,11 +70,12 @@ func New(cfg *Config) http.Handler {
 // NewServer membuat *http.Server yang siap untuk graceful shutdown.
 func NewServer(cfg *Config) *http.Server {
 	return &http.Server{
-		Addr:         Addr(cfg),
-		Handler:      New(cfg),
-		ReadTimeout:  30 * time.Second,
-		WriteTimeout: 0, // 0 = no timeout — diperlukan untuk streaming file besar
-		IdleTimeout:  120 * time.Second,
+		Addr:              Addr(cfg),
+		Handler:           New(cfg),
+		ReadHeaderTimeout: 30 * time.Second,
+		ReadTimeout:       0, // 0 = jangan putus upload file besar yang valid di tengah jalan
+		WriteTimeout:      0, // 0 = no timeout — diperlukan untuk streaming file besar
+		IdleTimeout:       120 * time.Second,
 	}
 }
 

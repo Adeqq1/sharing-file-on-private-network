@@ -637,7 +637,7 @@ body {
   bottom: 44px;
   z-index: 9;
   color: #fff;
-  font-size: 2rem;
+  font-size: 1.12rem;
   line-height: 1.35;
   text-align: center;
   pointer-events: none;
@@ -651,7 +651,7 @@ body {
 .cplayer-video::cue {
   background: transparent;
   color: #fff;
-  font-size: .9em;
+  font-size: .5em;
   text-shadow:
     -1px -1px 0 #000,
      1px -1px 0 #000,
@@ -661,6 +661,27 @@ body {
 @media (min-width: 768px) {
   .cplayer-subtitle-overlay {
     bottom: 60px;
+    font-size: 2.1rem;
+  }
+}
+
+/* Ensure subtitles stay small on mobile even in landscape/fullscreen */
+@media (max-width: 932px) and (orientation: landscape) {
+  .cplayer-subtitle-overlay {
+    font-size: 1.12rem;
+    bottom: 32px;
+  }
+  .cplayer-video::cue {
+    font-size: .5em;
+  }
+}
+
+.cplayer:fullscreen .cplayer-subtitle-overlay {
+  font-size: 1.12rem;
+}
+
+@media (min-width: 768px) {
+  .cplayer:fullscreen .cplayer-subtitle-overlay {
     font-size: 2.1rem;
   }
 }

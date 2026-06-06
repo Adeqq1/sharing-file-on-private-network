@@ -258,7 +258,7 @@ function renderFiles(items) {
 
     // Progress bar untuk video yang ada di history
     const fullPath = state.currentPath ? state.currentPath + '/' + item.name : item.name;
-    const histEntry = window.watchHistoryByPath[fullPath];
+    const histEntry = window.watchHistoryByPath?.[fullPath];
     let progressHTML = '';
     if (histEntry && histEntry.duration_sec > 0 && !histEntry.completed) {
       const pct = Math.min(100, (histEntry.position_sec / histEntry.duration_sec) * 100);
@@ -1225,7 +1225,7 @@ async function renderHistory() {
   if (!ul) return;
   ul.innerHTML = '';
   await loadHistoryCache();
-  const list = Object.values(window.watchHistoryByPath).sort((a, b) =>
+  const list = Object.values(window.watchHistoryByPath || {}).sort((a, b) =>
     new Date(b.watched_at) - new Date(a.watched_at)
   );
   if (list.length === 0) {

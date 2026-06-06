@@ -35,6 +35,7 @@ const cplayer = {
     _subtitleBlobUrl: null,  // Blob URL subtitle aktif (untuk revoke saat ganti/close)
     _activeTextTrack: null,  // text track aktif untuk sinkronisasi subtitle overlay
     _cueChangeHandler: null, // handler cuechange aktif agar bisa dicabut saat ganti track
+    iosNativeFullscreen: false,
   },
   abort: null, // AbortController untuk listener per-video
 };
@@ -247,6 +248,17 @@ function setupVideoEvents() {
     if (!document.fullscreenElement) {
       unlockOrientation();
     }
+  });
+
+  // iPhone/iOS Safari memakai native fullscreen player di luar DOM overlay kita.
+  // Saat fullscreen native aktif, fallback ke subtitle native agar subtitle tetap muncul.
+  v.addEventListener('webkitbeginfullscreen', () => {
+    cplayer.state.iosNativeFullscreen = true;
+    syncSubtitlePresentation();
+  });
+  v.addEventListener('webkitendfullscreen', () => {
+    cplayer.state.iosNativeFullscreen = false;
+    syncSubtitlePresentation();
   });
 }
 
@@ -858,12 +870,7 @@ function toggleCC(forceState) {
     return;
   }
   cplayer.state.ccEnabled = newState;
-  tracks[tracks.length - 1].mode = 'hidden';
-  if (newState) {
-    renderActiveCueOverlay();
-  } else {
-    hideSubtitleOverlay();
-  }
+  syncSubtitlePresentation();
 }
 
 function cueTextToHTML(text) {
@@ -900,6 +907,35 @@ function hideSubtitleOverlay() {
   if (!cplayer.dom.subtitle) return;
   cplayer.dom.subtitle.innerHTML = '';
   cplayer.dom.subtitle.classList.add('hidden');
+}
+
+function activeSubtitleTrack() {
+  const tracks = cplayer.video?.textTracks;
+  if (!tracks || tracks.length === 0) return null;
+  return tracks[tracks.length - 1];
+}
+
+function syncSubtitlePresentation() {
+  const track = activeSubtitleTrack();
+  if (!track) {
+    hideSubtitleOverlay();
+    return;
+  }
+
+  if (!cplayer.state.ccEnabled) {
+    track.mode = 'hidden';
+    hideSubtitleOverlay();
+    return;
+  }
+
+  if (cplayer.state.iosNativeFullscreen) {
+    track.mode = 'showing';
+    hideSubtitleOverlay();
+    return;
+  }
+
+  track.mode = 'hidden';
+  renderActiveCueOverlay();
 }
 
 function renderActiveCueOverlay() {
@@ -952,7 +988,7 @@ function attachSubtitleOverlayTrack(track) {
   cplayer.state._activeTextTrack = track;
   cplayer.state._cueChangeHandler = handler;
   track.addEventListener('cuechange', handler);
-  renderActiveCueOverlay();
+  syncSubtitlePresentation();
 }
 
 // ===== Keyboard Shortcuts =====
@@ -1553,6 +1589,7 @@ function resetCplayer() {
   cplayer.state.queueIndex = -1;
   cplayer.state.fsTransition = false; // reset flag transisi fullscreen
   cplayer.state.currentSubIdx = -1;  // reset index subtitle aktif
+  cplayer.state.iosNativeFullscreen = false;
 
   // Reset state seek transcode
   cplayer.state.transcodeOffset = 0;

@@ -119,6 +119,9 @@ func HandleStream(cfg *Config) http.HandlerFunc {
 			return
 		}
 		defer file.Close()
+		if fileInfo, err := file.Stat(); err == nil {
+			info = fileInfo
+		}
 
 		http.ServeContent(w, r, info.Name(), info.ModTime(), fileWithoutConn{file})
 	}
@@ -612,6 +615,9 @@ func HandleDownload(cfg *Config) http.HandlerFunc {
 			return
 		}
 		defer file.Close()
+		if fileInfo, err := file.Stat(); err == nil {
+			info = fileInfo
+		}
 
 		w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, info.Name()))
 		http.ServeContent(w, r, info.Name(), info.ModTime(), fileWithoutConn{file})

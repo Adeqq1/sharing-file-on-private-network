@@ -14,7 +14,6 @@ import (
 
 const (
 	fileVersion = 1
-	maxEntries  = 5 // simpan 5 tontonan terakhir; entry paling lama otomatis di-prune
 )
 
 // Entry menyimpan satu record riwayat tontonan.
@@ -29,9 +28,10 @@ type Entry struct {
 
 // Store adalah in-memory store yang di-persist ke disk sebagai JSON.
 type Store struct {
-	mu      sync.Mutex
-	file    string
-	entries map[string]Entry // key: sha1(path)
+	mu         sync.Mutex
+	file       string
+	entries    map[string]Entry // key: sha1(path)
+	maxEntries int
 }
 
 func keyOf(relPath string) string {
@@ -40,13 +40,14 @@ func keyOf(relPath string) string {
 }
 
 // Open memuat store dari disk. Kalau file belum ada, store kosong.
-func Open(cacheDir string) (*Store, error) {
+func Open(cacheDir string, maxEntries int) (*Store, error) {
 	if err := os.MkdirAll(cacheDir, 0755); err != nil {
 		return nil, fmt.Errorf("mkdir cacheDir: %w", err)
 	}
 	s := &Store{
-		file:    filepath.Join(cacheDir, "watch_history.json"),
-		entries: make(map[string]Entry),
+		file:       filepath.Join(cacheDir, "watch_history.json"),
+		entries:    make(map[string]Entry),
+		maxEntries: maxEntries,
 	}
 	data, err := os.ReadFile(s.file)
 	if err != nil {
@@ -67,6 +68,12 @@ func Open(cacheDir string) (*Store, error) {
 	if raw.Entries != nil {
 		s.entries = raw.Entries
 	}
+
+	// Prune pada startup untuk memastikan limit terpenuhi jika file diedit manual atau ada bug lama
+	s.mu.Lock()
+	s.prune()
+	s.mu.Unlock()
+
 	return s, nil
 }
 
@@ -128,7 +135,10 @@ func (s *Store) Clear() error {
 // prune memastikan jumlah entry <= maxEntries dengan menghapus yang paling lama.
 // Caller harus pegang mutex.
 func (s *Store) prune() {
-	if len(s.entries) <= maxEntries {
+	if s.maxEntries <= 0 {
+		return
+	}
+	if len(s.entries) <= s.maxEntries {
 		return
 	}
 	type kv struct {
@@ -142,7 +152,7 @@ func (s *Store) prune() {
 	sort.Slice(list, func(i, j int) bool {
 		return list[i].e.WatchedAt.After(list[j].e.WatchedAt)
 	})
-	for _, item := range list[maxEntries:] {
+	for _, item := range list[s.maxEntries:] {
 		delete(s.entries, item.k)
 	}
 }

@@ -8,7 +8,7 @@ import (
 
 func TestSetGetList(t *testing.T) {
 	dir := t.TempDir()
-	s, err := Open(dir)
+	s, err := Open(dir, 10)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -43,7 +43,7 @@ func TestSetGetList(t *testing.T) {
 	}
 
 	// Reload dari disk
-	s2, err := Open(dir)
+	s2, err := Open(dir, 10)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -54,7 +54,7 @@ func TestSetGetList(t *testing.T) {
 
 func TestDelete(t *testing.T) {
 	dir := t.TempDir()
-	s, _ := Open(dir)
+	s, _ := Open(dir, 10)
 	_ = s.Set("a", "a", 1, 10)
 	if err := s.Delete("a"); err != nil {
 		t.Fatal(err)
@@ -66,7 +66,7 @@ func TestDelete(t *testing.T) {
 
 func TestClear(t *testing.T) {
 	dir := t.TempDir()
-	s, _ := Open(dir)
+	s, _ := Open(dir, 10)
 	_ = s.Set("a", "a", 1, 10)
 	_ = s.Set("b", "b", 2, 10)
 	if err := s.Clear(); err != nil {
@@ -76,7 +76,7 @@ func TestClear(t *testing.T) {
 		t.Fatal("expected empty after clear")
 	}
 	// Reload juga harus kosong
-	s2, _ := Open(dir)
+	s2, _ := Open(dir, 10)
 	if len(s2.List()) != 0 {
 		t.Fatal("reload should be empty after clear")
 	}
@@ -88,7 +88,7 @@ func TestCorruptFile(t *testing.T) {
 	histPath := dir + "/watch_history.json"
 	_ = os.WriteFile(histPath, []byte("not valid json {{{"), 0644)
 	// Open harus tidak crash, return store kosong
-	s, err := Open(dir)
+	s, err := Open(dir, 10)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -99,13 +99,14 @@ func TestCorruptFile(t *testing.T) {
 
 func TestPrune(t *testing.T) {
 	dir := t.TempDir()
-	s, _ := Open(dir)
-	// Isi lebih dari maxEntries
-	for i := 0; i < maxEntries+10; i++ {
+	max := 5
+	s, _ := Open(dir, max)
+	// Isi lebih dari max
+	for i := 0; i < max+10; i++ {
 		path := "file_" + string(rune('a'+i%26)) + "_" + string(rune('0'+i/26)) + ".mkv"
 		_ = s.Set(path, path, float64(i), 1000)
 	}
-	if len(s.List()) > maxEntries {
-		t.Fatalf("expected <= %d entries after prune, got %d", maxEntries, len(s.List()))
+	if len(s.List()) > max {
+		t.Fatalf("expected <= %d entries after prune, got %d", max, len(s.List()))
 	}
 }

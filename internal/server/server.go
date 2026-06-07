@@ -33,10 +33,10 @@ func New(cfg *Config) http.Handler {
 	mux := http.NewServeMux()
 
 	// History store — load dari disk, fallback ke store kosong kalau gagal
-	historyStore, err := history.Open(cfg.CacheDir())
+	historyStore, err := history.Open(cfg.CacheDir(), cfg.MaxHistory)
 	if err != nil {
 		log.Printf("WARN: gagal load history store: %v — mulai dengan store kosong", err)
-		historyStore, _ = history.Open(cfg.CacheDir())
+		historyStore, _ = history.Open(cfg.CacheDir(), cfg.MaxHistory)
 	}
 
 	// API routes

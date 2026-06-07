@@ -15,6 +15,7 @@ type Config struct {
 	PINEnabled     bool   `json:"pin_enabled"`
 	FFmpegPath     string `json:"ffmpeg_path"`      // path ke executable ffmpeg, kosong = auto-detect
 	UploadMaxBytes int64  `json:"upload_max_bytes"` // batas ukuran per file upload (bytes), default 5 GB
+	MaxHistory     int    `json:"max_history"`      // batas jumlah riwayat tontonan, default 5
 }
 
 // LoadConfig membaca config.json dari path yang diberikan.
@@ -32,6 +33,9 @@ func LoadConfig(path string) (*Config, error) {
 	}
 	if cfg.UploadMaxBytes <= 0 {
 		cfg.UploadMaxBytes = 5 << 30 // 5 GB
+	}
+	if cfg.MaxHistory <= 0 {
+		cfg.MaxHistory = 5
 	}
 	if err := cfg.Validate(); err != nil {
 		return nil, fmt.Errorf("config tidak valid: %w", err)

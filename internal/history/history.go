@@ -14,7 +14,7 @@ import (
 
 const (
 	fileVersion = 1
-	maxEntries  = 200 // entry paling lama otomatis di-prune
+	maxEntries  = 5 // simpan 5 tontonan terakhir; entry paling lama otomatis di-prune
 )
 
 // Entry menyimpan satu record riwayat tontonan.

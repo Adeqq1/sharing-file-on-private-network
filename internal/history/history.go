@@ -14,7 +14,7 @@ import (
 
 const (
 	fileVersion = 1
-	maxEntries  = 200 // entry paling lama otomatis di-prune
+	maxEntries  = 5 // Batasi maksimal history yang disimpan di server menjadi 5
 )
 
 // Entry menyimpan satu record riwayat tontonan.

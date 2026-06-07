@@ -1245,7 +1245,7 @@ async function renderHistory() {
   await loadHistoryCache();
   const list = Object.values(window.watchHistoryByPath || {}).sort((a, b) =>
     new Date(b.watched_at) - new Date(a.watched_at)
-  );
+  ).slice(0, 5); // BATASI HANYA 5 RIWAYAT TERAKHIR
   if (list.length === 0) {
     emptyEl.classList.remove('hidden');
     return;

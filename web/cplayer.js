@@ -25,7 +25,7 @@ const cplayer = {
     rafId: null,
     fsTransition: false,     // flag anti race-condition: true saat requestFullscreen sedang pending
     cssRotated: false,       // flag CSS rotate mode (putar player 90° tanpa fullscreen API)
-    subScale: 1,             // pengali ukuran subtitle (0.8 / 1 / 1.25 / 1.5)
+    subScale: 2,             // pengali ukuran subtitle (1.5 / 2 / 3 / 4)
     // ── Seek support untuk video transcode ──
     transcodeOffset: 0,      // detik offset saat ini untuk video transcode (0 = dari awal)
     totalDuration: 0,        // durasi penuh video dari /api/probe (untuk display & seek)
@@ -87,10 +87,10 @@ function initCplayer() {
   // Restore preferences dari localStorage
   const savedVol      = parseFloat(localStorage.getItem('cp_volume')    || '1');
   const savedSpeed    = parseFloat(localStorage.getItem('cp_speed')     || '1');
-  const savedSubScale = parseFloat(localStorage.getItem('cp_sub_scale') || '1');
+  const savedSubScale = parseFloat(localStorage.getItem('cp_sub_scale') || '2');
   cplayer.video.volume    = isFinite(savedVol)      ? clampVolume(savedVol) : 1;
   cplayer.state.speed     = isFinite(savedSpeed)    ? savedSpeed    : 1;
-  cplayer.state.subScale  = isFinite(savedSubScale) ? savedSubScale : 1;
+  cplayer.state.subScale  = isFinite(savedSubScale) ? savedSubScale : 2;
   cplayer.video.playbackRate = cplayer.state.speed;
   updateSpeedLabel();
   updateVolumeUI();
@@ -412,7 +412,7 @@ function setupControlEvents() {
 
 // ===== Settings Menu (gear icon) =====
 
-const SUB_SIZE_LABELS = { 0.8: 'Kecil', 1: 'Normal', 1.25: 'Besar', 1.5: 'Sangat Besar' };
+const SUB_SIZE_LABELS = { 1.5: 'Kecil', 2: 'Normal', 3: 'Besar', 4: 'Sangat Besar' };
 
 function showMainSettingsMenu() {
   if (!cplayer.dom.settingsMenu) return;
@@ -507,18 +507,12 @@ function showSubSubmenu() {
 }
 
 function showSubSizeSubmenu() {
-  const options = [
-    { scale: 1.5,  label: 'Kecil' },
-    { scale: 2,    label: 'Normal' },
-    { scale: 3, label: 'Besar' },
-    { scale: 4,  label: 'Sangat Besar' },
-  ];
   cplayer.dom.settingsMenu.innerHTML = `
     <button class="cplayer-popup-item popup-back" data-action="back">‹ Ukuran Subtitle</button>
-    ${options.map(o => `
-      <button class="cplayer-popup-item ${o.scale === cplayer.state.subScale ? 'active' : ''}"
-              data-subscale="${o.scale}">
-        ${o.label}
+    ${Object.entries(SUB_SIZE_LABELS).map(([scale, label]) => `
+      <button class="cplayer-popup-item ${parseFloat(scale) === cplayer.state.subScale ? 'active' : ''}"
+              data-subscale="${scale}">
+        ${label}
       </button>
     `).join('')}
   `;

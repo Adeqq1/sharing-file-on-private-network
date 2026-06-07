@@ -245,8 +245,11 @@ function setupVideoEvents() {
     showControls();
     // Saat keluar fullscreen (via Escape, back button HP, swipe, dll),
     // pastikan orientasi di-unlock agar HP bisa rotate normal kembali.
-    if (!document.fullscreenElement) {
+    if (document.fullscreenElement) {
+      if (cplayer.dom.container) cplayer.dom.container.classList.add('is-fullscreen');
+    } else {
       unlockOrientation();
+      if (cplayer.dom.container) cplayer.dom.container.classList.remove('is-fullscreen');
     }
   });
 
@@ -1555,7 +1558,7 @@ function resetCplayer() {
   clearTimeout(cplayer.state.gestureTimer);
   cancelAnimationFrame(cplayer.state.rafId);
 
-  if (cplayer.dom.container) cplayer.dom.container.classList.remove('hide-controls');
+  if (cplayer.dom.container) cplayer.dom.container.classList.remove('hide-controls', 'is-fullscreen');
   if (cplayer.dom.gesture)   cplayer.dom.gesture.classList.add('hidden');
   if (cplayer.dom.skipBack)  cplayer.dom.skipBack.classList.add('hidden');
   if (cplayer.dom.skipFwd)   cplayer.dom.skipFwd.classList.add('hidden');

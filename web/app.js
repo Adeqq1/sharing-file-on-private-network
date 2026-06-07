@@ -343,6 +343,12 @@ function playItem(item) {
     }
   }
   openPlayer(item);
+
+  // AUTO-FULLSCREEN: hanya untuk video, dipicu langsung dari tap user (user gesture masih aktif).
+  // Audio tidak di-fullscreen-kan. iOS akan gagal diam-diam (di-catch di enterFullscreen).
+  if (item.streamable === 'video' && typeof enterFullscreen === 'function') {
+    enterFullscreen();
+  }
 }
 
 function openItemMenu(item) {
@@ -476,6 +482,9 @@ let playerAbort = new AbortController();
 // Buka player untuk format yang browser support (MP4, WebM, MP3, dll)
 // atau format yang butuh transcode via /api/transcode (MKV, AVI, WMV, FLV, dll)
 function openPlayer(item) {
+  // Simpan posisi scroll daftar file agar bisa dikembalikan saat user menekan Kembali.
+  state.scrollBeforePlayer = window.scrollY;
+
   state.currentPlayerItem = item;
 
   // Pilih URL stream berdasarkan format file
@@ -693,6 +702,11 @@ function pickStreamURL(item) {
 }
 
 function closePlayer() {
+  // Keluar fullscreen dulu kalau sedang fullscreen (mis. ditutup saat masih fullscreen).
+  if (document.fullscreenElement) {
+    document.exitFullscreen().catch(() => {});
+  }
+
   // Sync history sebelum tutup player
   if (typeof syncHistoryNow === 'function') syncHistoryNow();
 
@@ -712,6 +726,10 @@ function closePlayer() {
   // Refresh history cache dan re-render file list agar progress bar up-to-date
   loadHistoryCache().then(() => {
     if (state.allItems.length > 0) renderFiles(state.allItems);
+    // Kembalikan scroll ke posisi sebelum video dibuka (setelah daftar di-render ulang).
+    if (typeof state.scrollBeforePlayer === 'number') {
+      window.scrollTo(0, state.scrollBeforePlayer);
+    }
   });
 }
 

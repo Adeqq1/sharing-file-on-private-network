@@ -254,7 +254,20 @@ function setupVideoEvents() {
     } else {
       unlockOrientation();
       if (cplayer.dom.container) cplayer.dom.container.classList.remove('is-fullscreen');
+
+      // FIX: Jika keluar fullscreen BUKAN karena user menekan tombol FS player,
+      // (misalnya karena hardware back button HP atau Escape), langsung tutup player.
+      if (!cplayer.state.fsToggleClicked && typeof closePlayer === 'function') {
+        const overlay = document.getElementById('player-overlay');
+        if (overlay && !overlay.classList.contains('hidden')) {
+          closePlayer();
+          if (history.state && history.state.player) history.back();
+        }
+      }
     }
+    
+    // Selalu reset flag setelah event tertangani
+    cplayer.state.fsToggleClicked = false;
   });
 
   // iPhone/iOS Safari memakai native fullscreen player di luar DOM overlay kita.
@@ -1211,6 +1224,27 @@ function toggleCssRotate() {
   showControls();
 }
 
+// Masuk fullscreen (idempotent): kalau sudah fullscreen / sedang transisi, tidak melakukan apa-apa.
+// Dipanggil oleh tombol FS DAN oleh auto-fullscreen saat video dibuka.
+async function enterFullscreen() {
+  if (!cplayer.dom.container) return;
+  if (document.fullscreenElement) return;   // sudah fullscreen → jangan dobel
+  if (cplayer.state.fsTransition) return;    // sedang transisi → abaikan
+
+  // Kalau sedang mode CSS-rotate, matikan dulu (fullscreen + screen lock akan urus rotasi).
+  if (cplayer.state.cssRotated) toggleCssRotate();
+
+  cplayer.state.fsTransition = true;
+  try {
+    await cplayer.dom.container.requestFullscreen();
+    await lockLandscape();   // kunci orientasi SETELAH fullscreen aktif
+  } catch (_) {
+    // Diabaikan: iOS Safari tidak mendukung fullscreen pada <div>, atau user batal.
+  } finally {
+    cplayer.state.fsTransition = false;
+  }
+}
+
 // Refactor ke async/await agar konsisten — tidak ada double-wrap Promise.
 // Flag fsTransition mencegah race condition saat user double-tap tombol
 // fullscreen sebelum requestFullscreen() selesai (review 1.1 + 1.4).
@@ -1227,22 +1261,7 @@ async function toggleFullscreen() {
       await document.exitFullscreen();
     } catch (_) { /* abaikan — browser mungkin sudah keluar fullscreen */ }
   } else {
-    // Kalau sedang CSS rotate, matikan dulu — fullscreen + screen lock akan handle rotasi.
-    if (cplayer.state.cssRotated) {
-      toggleCssRotate();
-    }
-    // Enter: set flag dulu agar klik ganda tidak memicu requestFullscreen kedua.
-    cplayer.state.fsTransition = true;
-    try {
-      await cplayer.dom.container.requestFullscreen();
-      // Lock orientasi SETELAH fullscreen aktif — screen.orientation.lock()
-      // akan error kalau dipanggil sebelum fullscreen benar-benar aktif.
-      await lockLandscape();
-    } catch (_) { /* abaikan — user mungkin cancel atau browser tidak support */ }
-    finally {
-      // Selalu reset flag setelah selesai (berhasil atau gagal).
-      cplayer.state.fsTransition = false;
-    }
+    await enterFullscreen();
 
     // Hint untuk iOS Safari yang tidak support screen.orientation.lock.
     // Tampilkan sekali per session agar tidak mengganggu.

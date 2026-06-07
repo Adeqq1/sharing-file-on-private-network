@@ -25,6 +25,7 @@ const cplayer = {
     rafId: null,
     fsTransition: false,     // flag anti race-condition: true saat requestFullscreen sedang pending
     cssRotated: false,       // flag CSS rotate mode (putar player 90° tanpa fullscreen API)
+    subScale: 1,             // pengali ukuran subtitle (0.8 / 1 / 1.25 / 1.5)
     // ── Seek support untuk video transcode ──
     transcodeOffset: 0,      // detik offset saat ini untuk video transcode (0 = dari awal)
     totalDuration: 0,        // durasi penuh video dari /api/probe (untuk display & seek)
@@ -84,13 +85,16 @@ function initCplayer() {
   };
 
   // Restore preferences dari localStorage
-  const savedVol   = parseFloat(localStorage.getItem('cp_volume') || '1');
-  const savedSpeed = parseFloat(localStorage.getItem('cp_speed')  || '1');
-  cplayer.video.volume = isFinite(savedVol)   ? clampVolume(savedVol) : 1;
-  cplayer.state.speed  = isFinite(savedSpeed) ? savedSpeed : 1;
+  const savedVol      = parseFloat(localStorage.getItem('cp_volume')    || '1');
+  const savedSpeed    = parseFloat(localStorage.getItem('cp_speed')     || '1');
+  const savedSubScale = parseFloat(localStorage.getItem('cp_sub_scale') || '1');
+  cplayer.video.volume    = isFinite(savedVol)      ? clampVolume(savedVol) : 1;
+  cplayer.state.speed     = isFinite(savedSpeed)    ? savedSpeed    : 1;
+  cplayer.state.subScale  = isFinite(savedSubScale) ? savedSubScale : 1;
   cplayer.video.playbackRate = cplayer.state.speed;
   updateSpeedLabel();
   updateVolumeUI();
+  applySubtitleScale();
 
   // iOS: sembunyikan volume slider (tidak bisa diset programmatically)
   if (IS_IOS && cplayer.dom.volSlider) {
@@ -408,12 +412,15 @@ function setupControlEvents() {
 
 // ===== Settings Menu (gear icon) =====
 
+const SUB_SIZE_LABELS = { 0.8: 'Kecil', 1: 'Normal', 1.25: 'Besar', 1.5: 'Sangat Besar' };
+
 function showMainSettingsMenu() {
   if (!cplayer.dom.settingsMenu) return;
   const speedLabel = cplayer.state.speed === 1 ? 'Normal' : cplayer.state.speed + 'x';
   const subLabel = cplayer.state.ccEnabled
     ? (cplayer.state.availableSubs.find(s => s.lang === cplayer.state.currentLang)?.label || 'On')
     : 'Off';
+  const subSizeLabel = SUB_SIZE_LABELS[cplayer.state.subScale] || 'Normal';
 
   cplayer.dom.settingsMenu.innerHTML = `
     <button class="cplayer-popup-item" data-action="show-speed">
@@ -424,6 +431,10 @@ function showMainSettingsMenu() {
       <span>Subtitle</span>
       <span class="popup-value">${subLabel} ›</span>
     </button>
+    <button class="cplayer-popup-item" data-action="show-subsize">
+      <span>Ukuran Subtitle</span>
+      <span class="popup-value">${subSizeLabel} ›</span>
+    </button>
   `;
 
   // Pasang listener
@@ -433,6 +444,7 @@ function showMainSettingsMenu() {
       const action = btn.dataset.action;
       if (action === 'show-speed') showSpeedSubmenu();
       else if (action === 'show-cc') showSubSubmenu();
+      else if (action === 'show-subsize') showSubSizeSubmenu();
     });
   });
 }
@@ -487,6 +499,33 @@ function showSubSubmenu() {
     btn.addEventListener('click', (e) => {
       e.stopPropagation();
       toggleCC(false);
+      closeAllPopups();
+    });
+  });
+  cplayer.dom.settingsMenu.querySelector('[data-action="back"]')
+    .addEventListener('click', (e) => { e.stopPropagation(); showMainSettingsMenu(); });
+}
+
+function showSubSizeSubmenu() {
+  const options = [
+    { scale: 0.8,  label: 'Kecil' },
+    { scale: 1,    label: 'Normal' },
+    { scale: 1.25, label: 'Besar' },
+    { scale: 1.5,  label: 'Sangat Besar' },
+  ];
+  cplayer.dom.settingsMenu.innerHTML = `
+    <button class="cplayer-popup-item popup-back" data-action="back">‹ Ukuran Subtitle</button>
+    ${options.map(o => `
+      <button class="cplayer-popup-item ${o.scale === cplayer.state.subScale ? 'active' : ''}"
+              data-subscale="${o.scale}">
+        ${o.label}
+      </button>
+    `).join('')}
+  `;
+  cplayer.dom.settingsMenu.querySelectorAll('[data-subscale]').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      setSubtitleScale(parseFloat(btn.dataset.subscale));
       closeAllPopups();
     });
   });
@@ -1225,6 +1264,17 @@ function setSpeed(speed) {
   cplayer.video.playbackRate = speed;
   localStorage.setItem('cp_speed', speed);
   updateSpeedLabel();
+}
+
+function applySubtitleScale() {
+  if (!cplayer.dom.container) return;
+  cplayer.dom.container.style.setProperty('--cp-sub-scale', cplayer.state.subScale);
+}
+
+function setSubtitleScale(scale) {
+  cplayer.state.subScale = scale;
+  localStorage.setItem('cp_sub_scale', scale);
+  applySubtitleScale();
 }
 
 function updateSpeedLabel() {

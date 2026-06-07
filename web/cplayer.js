@@ -508,10 +508,10 @@ function showSubSubmenu() {
 
 function showSubSizeSubmenu() {
   const options = [
-    { scale: 0.8,  label: 'Kecil' },
-    { scale: 1,    label: 'Normal' },
-    { scale: 1.25, label: 'Besar' },
-    { scale: 1.5,  label: 'Sangat Besar' },
+    { scale: 1.5,  label: 'Kecil' },
+    { scale: 2,    label: 'Normal' },
+    { scale: 3, label: 'Besar' },
+    { scale: 4,  label: 'Sangat Besar' },
   ];
   cplayer.dom.settingsMenu.innerHTML = `
     <button class="cplayer-popup-item popup-back" data-action="back">‹ Ukuran Subtitle</button>

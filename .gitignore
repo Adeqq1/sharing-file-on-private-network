@@ -21,6 +21,8 @@ Thumbs.db
 # Config lokal (machine-specific) — gunakan config.example.json sebagai template
 config.
 GEMINI.md
+AGENTS.md
+CLAUDE.md
 
 # Cache subtitle embedded dan file temporary
 cache/

@@ -1315,7 +1315,7 @@ async function openPlayerFromHistory(entry) {
   const slash = entry.path.lastIndexOf('/');
   const dir = slash >= 0 ? entry.path.slice(0, slash) : '';
   await loadFiles(dir);
-  openPlayer(fakeItem);
+  playItem(fakeItem);
 }
 
 // ===== Init =====

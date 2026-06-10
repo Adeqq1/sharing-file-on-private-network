@@ -2,29 +2,31 @@
 
 import * as React from "react";
 import { AnimatePresence, motion } from "framer-motion";
-import { useOnClickOutside } from "usehooks-ts";
 import { cn } from "@/lib/utils";
 import { type LucideIcon } from "lucide-react";
 
-interface Tab {
+export interface Tab {
   title: string;
   icon: LucideIcon;
   type?: never;
 }
 
-interface Separator {
+export interface Separator {
   type: "separator";
   title?: never;
   icon?: never;
 }
 
-type TabItem = Tab | Separator;
+export type TabItem = Tab | Separator;
 
-interface ExpandableTabsProps {
+export interface ExpandableTabsProps {
   tabs: TabItem[];
+  value?: number | null;
+  defaultValue?: number | null;
   className?: string;
   activeColor?: string;
   onChange?: (index: number | null) => void;
+  ariaLabel?: string;
 }
 
 const buttonVariants = {
@@ -50,21 +52,67 @@ const transition = { delay: 0.1, type: "spring", bounce: 0, duration: 0.6 } as c
 
 export function ExpandableTabs({
   tabs,
+  value,
+  defaultValue = null,
   className,
   activeColor = "text-primary",
   onChange,
+  ariaLabel = "Expandable tabs",
 }: ExpandableTabsProps) {
-  const [selected, setSelected] = React.useState<number | null>(null);
+  const [internalSelected, setInternalSelected] = React.useState<number | null>(defaultValue);
   const outsideClickRef = React.useRef<HTMLDivElement>(null);
+  const selected = value !== undefined ? value : internalSelected;
+  const selectableIndexes = tabs.flatMap((tab, index) =>
+    tab.type === "separator" ? [] : [index]
+  );
 
-  useOnClickOutside(outsideClickRef as React.RefObject<HTMLElement>, () => {
-    setSelected(null);
-    onChange?.(null);
+  const updateSelected = (index: number | null) => {
+    if (value === undefined) {
+      setInternalSelected(index);
+    }
+    onChange?.(index);
+  };
+
+  React.useEffect(() => {
+    const handlePointerDown = (event: PointerEvent) => {
+      if (!outsideClickRef.current?.contains(event.target as Node)) {
+        updateSelected(null);
+      }
+    };
+
+    document.addEventListener("pointerdown", handlePointerDown);
+    return () => document.removeEventListener("pointerdown", handlePointerDown);
   });
 
   const handleSelect = (index: number) => {
-    setSelected(index);
-    onChange?.(index);
+    updateSelected(index);
+  };
+
+  const handleKeyDown = (event: React.KeyboardEvent<HTMLButtonElement>, index: number) => {
+    const currentPosition = selectableIndexes.indexOf(index);
+    let nextPosition: number;
+
+    if (event.key === "ArrowRight" || event.key === "ArrowDown") {
+      nextPosition = (currentPosition + 1) % selectableIndexes.length;
+    } else if (event.key === "ArrowLeft" || event.key === "ArrowUp") {
+      nextPosition =
+        (currentPosition - 1 + selectableIndexes.length) % selectableIndexes.length;
+    } else if (event.key === "Home") {
+      nextPosition = 0;
+    } else if (event.key === "End") {
+      nextPosition = selectableIndexes.length - 1;
+    } else if (event.key === "Escape") {
+      event.preventDefault();
+      updateSelected(null);
+      return;
+    } else {
+      return;
+    }
+
+    event.preventDefault();
+    const nextIndex = selectableIndexes[nextPosition];
+    updateSelected(nextIndex);
+    document.getElementById(`expandable-tab-${nextIndex}`)?.focus();
   };
 
   const Separator = () => (
@@ -74,6 +122,8 @@ export function ExpandableTabs({
   return (
     <div
       ref={outsideClickRef}
+      role="tablist"
+      aria-label={ariaLabel}
       className={cn(
         "flex flex-wrap items-center gap-2 rounded-2xl border bg-background p-1 shadow-sm",
         className
@@ -87,12 +137,19 @@ export function ExpandableTabs({
         const Icon = tab.icon;
         return (
           <motion.button
+            id={`expandable-tab-${index}`}
+            type="button"
+            role="tab"
+            aria-selected={selected === index}
+            aria-label={tab.title}
+            tabIndex={selected === index || (selected === null && index === selectableIndexes[0]) ? 0 : -1}
             key={tab.title}
             variants={buttonVariants}
             initial={false}
             animate="animate"
             custom={selected === index}
             onClick={() => handleSelect(index)}
+            onKeyDown={(event) => handleKeyDown(event, index)}
             transition={transition}
             className={cn(
               "relative flex items-center rounded-xl px-4 py-2 text-sm font-medium transition-colors duration-300",

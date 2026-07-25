@@ -463,7 +463,10 @@ body {
 }
 .player-header {
   display: flex; align-items: center; gap: 10px;
-  padding: 10px 14px;
+  padding: max(10px, env(safe-area-inset-top, 0px))
+           max(14px, env(safe-area-inset-right, 0px))
+           10px
+           max(14px, env(safe-area-inset-left, 0px));
   background: rgba(0,0,0,.75);
   backdrop-filter: blur(8px);
   -webkit-backdrop-filter: blur(8px);
@@ -550,7 +553,10 @@ body {
 }
 .cplayer-controls {
   position: absolute; left: 0; right: 0; bottom: 0;
-  padding: 8px 12px 14px;
+  padding: 8px
+           max(12px, env(safe-area-inset-right, 0px))
+           max(14px, env(safe-area-inset-bottom, 0px))
+           max(12px, env(safe-area-inset-left, 0px));
   background: linear-gradient(to top, rgba(0,0,0,.9) 0%, rgba(0,0,0,0) 100%);
   z-index: 10; transition: opacity .25s, transform .25s;
 }
@@ -635,7 +641,7 @@ body {
   position: absolute;
   left: 6%;
   right: 6%;
-  bottom: 44px;
+  bottom: calc(44px + env(safe-area-inset-bottom, 0px));
   z-index: 9;
   color: #fff;
   font-size: calc(1.12rem * var(--cp-sub-scale, 1));
@@ -670,7 +676,7 @@ body {
 @media (max-width: 932px) and (orientation: landscape) {
   .cplayer-subtitle-overlay {
     font-size: calc(1.12rem * var(--cp-sub-scale, 1));
-    bottom: 32px;
+    bottom: calc(32px + env(safe-area-inset-bottom, 0px));
   }
   .cplayer-video::cue {
     font-size: .5em;
@@ -697,7 +703,7 @@ body {
   /* Subtitle 20% smaller and slightly lower than the default mobile values */
   .cplayer-subtitle-overlay {
     font-size: calc(0.9rem * var(--cp-sub-scale, 1));
-    bottom: 36px;
+    bottom: calc(36px + env(safe-area-inset-bottom, 0px));
   }
 }
 

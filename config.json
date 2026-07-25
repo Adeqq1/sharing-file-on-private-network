@@ -1,6 +1,7 @@
 {
-  "shared_folder": "C:\\Users\\KingAdeNeww\\Shared",
+  "shared_folder": "/home/kingadedev/shared",
   "port": 8080,
   "pin_enabled": false,
-  "ffmpeg_path": ""
+  "ffmpeg_path": "",
+  "upload_max_bytes": 5368709120
 }

@@ -37,6 +37,7 @@ const cplayer = {
     // ── Burn-in subtitle (PGS) ──
     burnSubIndex: -1,        // stream index PGS yang sedang di-burn-in (-1 = tidak ada)
     _subtitleBlobUrl: null,  // Blob URL subtitle aktif (untuk revoke saat ganti/close)
+    _subtitleRawVtt: null,   // teks VTT absolut (untuk shift saat continuous seek)
     _activeTextTrack: null,  // text track aktif untuk sinkronisasi subtitle overlay
     _cueChangeHandler: null, // handler cuechange aktif agar bisa dicabut saat ganti track
     iosNativeFullscreen: false,
@@ -832,45 +833,102 @@ function switchSubtitleEntry(entry) {
     .then(res => {
       console.log('[sub] /api/subtitle status:', res.status);
       if (!res.ok) throw new Error('HTTP ' + res.status);
-      return res.blob();
+      return res.text();
     })
-    .then(blob => {
-      console.log('[sub] blob size:', blob.size, 'type:', blob.type);
-      // Pastikan subtitle ini masih relevan (user belum ganti video/subtitle)
+    .then(rawVtt => {
       if (!cplayer.video || cplayer.state.currentPath !== path) return;
-
-      const blobUrl = URL.createObjectURL(blob);
-      cplayer.state._subtitleBlobUrl = blobUrl;
-
-      // Hapus track lama lagi (mungkin ada yang masuk saat fetch berlangsung)
-      cplayer.video.querySelectorAll('track').forEach(t => t.remove());
-
-      const track = document.createElement('track');
-      track.kind = 'subtitles';
-      track.label = entry.label || 'Subtitle';
-      track.srclang = entry.lang || 'und';
-      track.src = blobUrl;
-      track.default = true;
-      cplayer.video.appendChild(track);
-
-      // Set mode = 'showing' langsung setelah append.
-      // Dengan Blob URL, data sudah ada di memori — tidak ada network fetch,
-      // sehingga ini bekerja reliably di semua browser termasuk iOS Safari.
-      const tt = cplayer.video.textTracks[cplayer.video.textTracks.length - 1];
-      if (tt) {
-        tt.mode = 'hidden';
-        attachSubtitleOverlayTrack(tt);
-      }
-      console.log('[sub] track appended, mode:', tt && tt.mode);
-
-      // Toast konfirmasi subtitle berhasil dimuat (Tahap 6)
+      cplayer.state._subtitleRawVtt = rawVtt;
+      attachShiftedSubtitleTrack(entry, rawVtt);
       showToastFromPlayer('💬 Subtitle: ' + (entry.label || entry.lang || 'Default'));
     })
     .catch(err => {
       console.error('[sub] fetch subtitle gagal:', err);
-      // Toast error agar user tahu subtitle gagal (Tahap 6)
       showToastFromPlayer('⚠ Subtitle gagal dimuat: ' + (err.message || 'error'));
     });
+}
+
+// parseVttTime: "HH:MM:SS.mmm" or "MM:SS.mmm" → seconds
+function parseVttTime(s) {
+  const p = String(s).trim().split(':');
+  if (p.length === 3) {
+    return (+p[0]) * 3600 + (+p[1]) * 60 + parseFloat(p[2]);
+  }
+  if (p.length === 2) {
+    return (+p[0]) * 60 + parseFloat(p[1]);
+  }
+  return parseFloat(s) || 0;
+}
+
+function formatVttTime(sec) {
+  if (sec < 0) sec = 0;
+  const h = Math.floor(sec / 3600);
+  const m = Math.floor((sec % 3600) / 60);
+  const s = sec - h * 3600 - m * 60;
+  const whole = Math.floor(s);
+  const ms = Math.round((s - whole) * 1000);
+  const pad = (n, w) => String(n).padStart(w, '0');
+  return `${pad(h, 2)}:${pad(m, 2)}:${pad(whole, 2)}.${pad(ms, 3)}`;
+}
+
+// shiftVttText: absolute VTT → stream-relative (subtract offset after continuous ?t= seek).
+// Cues that end before offset are dropped; start clamped to 0.
+function shiftVttText(raw, offsetSec) {
+  const off = Number(offsetSec) || 0;
+  if (!raw || off <= 0.05) return raw;
+  const lines = raw.replace(/^\uFEFF/, '').split(/\r?\n/);
+  const out = [];
+  const tsRe = /^(\d{1,2}:\d{2}:\d{2}\.\d{3}|\d{1,2}:\d{2}\.\d{3})\s*-->\s*(\d{1,2}:\d{2}:\d{2}\.\d{3}|\d{1,2}:\d{2}\.\d{3})(.*)$/;
+  for (let i = 0; i < lines.length; i++) {
+    const m = lines[i].match(tsRe);
+    if (!m) {
+      out.push(lines[i]);
+      continue;
+    }
+    let start = parseVttTime(m[1]) - off;
+    let end = parseVttTime(m[2]) - off;
+    if (end <= 0) {
+      // skip cue + following text lines until blank
+      while (i + 1 < lines.length && lines[i + 1].trim() !== '') i++;
+      continue;
+    }
+    if (start < 0) start = 0;
+    out.push(formatVttTime(start) + ' --> ' + formatVttTime(end) + (m[3] || ''));
+  }
+  return out.join('\n');
+}
+
+// attachShiftedSubtitleTrack: build Blob URL from absolute VTT shifted by transcodeOffset.
+function attachShiftedSubtitleTrack(entry, rawVtt) {
+  if (!cplayer.video || !rawVtt) return;
+  const offset = (cplayer.state.isTranscoded && !cplayer.state.isHLS)
+    ? (cplayer.state.transcodeOffset || 0)
+    : 0;
+  const shifted = shiftVttText(rawVtt, offset);
+  if (cplayer.state._subtitleBlobUrl) {
+    URL.revokeObjectURL(cplayer.state._subtitleBlobUrl);
+    cplayer.state._subtitleBlobUrl = null;
+  }
+  detachSubtitleOverlayTrack();
+  hideSubtitleOverlay();
+  cplayer.video.querySelectorAll('track').forEach(t => t.remove());
+
+  const blob = new Blob([shifted], { type: 'text/vtt' });
+  const blobUrl = URL.createObjectURL(blob);
+  cplayer.state._subtitleBlobUrl = blobUrl;
+
+  const track = document.createElement('track');
+  track.kind = 'subtitles';
+  track.label = (entry && entry.label) || 'Subtitle';
+  track.srclang = (entry && entry.lang) || 'und';
+  track.src = blobUrl;
+  track.default = true;
+  cplayer.video.appendChild(track);
+
+  const tt = cplayer.video.textTracks[cplayer.video.textTracks.length - 1];
+  if (tt) {
+    tt.mode = 'hidden';
+    attachSubtitleOverlayTrack(tt);
+  }
 }
 
 function toggleCC(forceState) {
@@ -1358,7 +1416,6 @@ function requestTranscodeSeek(targetSec) {
 }
 
 // _flushTranscodeSeek: eksekusi seek segera (dipanggil dari debounce atau pointerup).
-// Pakai closure value dari state.pendingSeek saat dipanggil.
 function _flushTranscodeSeek() {
   const path = cplayer.state.currentPath;
   if (!path || cplayer.state.pendingSeek == null) return;
@@ -1366,20 +1423,16 @@ function _flushTranscodeSeek() {
   const t = Math.max(0, Math.floor(cplayer.state.pendingSeek));
   cplayer.state.pendingSeek = null;
 
-  // Guard: kalau target sama dengan offset sekarang (dalam toleransi 1 detik),
-  // tidak perlu reload — cukup update UI. Ini mencegah reload sia-sia saat
-  // user drag progress bar ke posisi yang hampir sama.
-  const currentOffset = cplayer.state.transcodeOffset;
-  if (Math.abs(t - currentOffset) < 1 && cplayer.video && !cplayer.video.ended) {
+  // Skip only if already near absolute position (not just same offset)
+  const curAbs = effectiveCurrentTime();
+  if (Math.abs(t - curAbs) < 1 && cplayer.video && !cplayer.video.ended) {
     return;
   }
 
-  // Tampilkan spinner sekarang — seek benar-benar akan terjadi
   if (cplayer.dom.spinner) cplayer.dom.spinner.classList.remove('hidden');
 
   cplayer.state.transcodeOffset = t;
 
-  // Preserve burnSub kalau sedang dalam mode burn-in PGS
   const params = { path, t };
   if (cplayer.state.burnSubIndex >= 0) {
     params.burnSub = cplayer.state.burnSubIndex;
@@ -1388,60 +1441,39 @@ function _flushTranscodeSeek() {
   const v = cplayer.video;
   const wasPaused = v.paused;
 
-  // Simpan info subtitle aktif sebelum src di-reset.
-  // Saat v.src di-set ulang, browser menghapus semua <track> yang sudah di-append.
-  // Kita perlu re-attach subtitle setelah video siap kembali.
-  const activeBlobUrl  = cplayer.state._subtitleBlobUrl;
   const activeSubEntry = cplayer.state.availableSubs[cplayer.state.currentSubIdx];
-  const ccWasEnabled   = cplayer.state.ccEnabled && cplayer.state.burnSubIndex < 0;
+  const rawVtt = cplayer.state._subtitleRawVtt;
+  const ccWasEnabled = cplayer.state.ccEnabled && cplayer.state.burnSubIndex < 0 && rawVtt;
 
-  // Reset Blob URL state — akan di-set ulang setelah re-attach
-  cplayer.state._subtitleBlobUrl = null;
+  if (cplayer.state._subtitleBlobUrl) {
+    URL.revokeObjectURL(cplayer.state._subtitleBlobUrl);
+    cplayer.state._subtitleBlobUrl = null;
+  }
+  detachSubtitleOverlayTrack();
+  hideSubtitleOverlay();
+  v.querySelectorAll('track').forEach(tr => tr.remove());
 
   v.src = url;
   v.load();
 
-  // Re-attach subtitle setelah video siap (canplay).
-  // Pakai { once: true } agar tidak fire berkali-kali.
-  if (ccWasEnabled && activeBlobUrl && activeSubEntry) {
+  // Re-attach shifted subtitles (absolute VTT − offset) after stream ready
+  if (ccWasEnabled && activeSubEntry) {
     v.addEventListener('canplay', () => {
-      // Pastikan video masih sama dan subtitle masih aktif
-      if (!cplayer.video || cplayer.state.currentPath !== path) {
-        URL.revokeObjectURL(activeBlobUrl);
-        return;
-      }
-      // Hapus track lama (kalau ada sisa)
-      cplayer.video.querySelectorAll('track').forEach(t => t.remove());
-
-      const track = document.createElement('track');
-      track.kind    = 'subtitles';
-      track.label   = activeSubEntry.label || 'Subtitle';
-      track.srclang = activeSubEntry.lang  || 'und';
-      track.src     = activeBlobUrl;
-      track.default = true;
-      cplayer.video.appendChild(track);
-
-      cplayer.state._subtitleBlobUrl = activeBlobUrl;
-
-      const tt = cplayer.video.textTracks[cplayer.video.textTracks.length - 1];
-      if (tt) {
-        tt.mode = 'hidden';
-        attachSubtitleOverlayTrack(tt);
-      }
+      if (!cplayer.video || cplayer.state.currentPath !== path) return;
+      if (cplayer.dom.spinner) cplayer.dom.spinner.classList.add('hidden');
+      attachShiftedSubtitleTrack(activeSubEntry, rawVtt);
     }, { once: true });
   }
 
-  // Auto play setelah ready, kecuali user memang lagi pause
   if (!wasPaused) {
-    v.addEventListener('canplay', () => v.play().catch(() => {}), { once: true });
-  }
-
-  // Peringatan subtitle offset — hanya untuk text-based subtitle (bukan burn-in)
-  if (cplayer.state.ccEnabled && cplayer.state.burnSubIndex < 0 &&
-      cplayer.video.textTracks.length > 0 &&
-      !sessionStorage.getItem('cp_subOffsetWarned')) {
-    sessionStorage.setItem('cp_subOffsetWarned', '1');
-    showToastFromPlayer('⚠ Subtitle mungkin offset setelah lompat');
+    v.addEventListener('canplay', () => {
+      if (cplayer.dom.spinner) cplayer.dom.spinner.classList.add('hidden');
+      v.play().catch(() => {});
+    }, { once: true });
+  } else {
+    v.addEventListener('canplay', () => {
+      if (cplayer.dom.spinner) cplayer.dom.spinner.classList.add('hidden');
+    }, { once: true });
   }
 }
 
@@ -1656,11 +1688,11 @@ function resetCplayer() {
   cplayer.state.burnSubIndex    = -1;
   clearTimeout(_seekDebounceTimer);
 
-  // Cabut Blob URL subtitle agar tidak memory leak
   if (cplayer.state._subtitleBlobUrl) {
     URL.revokeObjectURL(cplayer.state._subtitleBlobUrl);
     cplayer.state._subtitleBlobUrl = null;
   }
+  cplayer.state._subtitleRawVtt = null;
 
   // Reset CSS rotate kalau masih aktif saat player ditutup
   if (cplayer.state.cssRotated) {

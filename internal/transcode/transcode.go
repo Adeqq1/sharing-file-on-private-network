@@ -273,6 +273,9 @@ func runFFmpeg(ctx context.Context, absPath string, probe *ProbeResult, startSec
 		strategy = "full transcode (burn-in)"
 	} else if outFormat == "mpegts" {
 		strategy = hlsStrategyName(probe)
+	} else if outFormat != "mpegts" && startSec > 0 {
+		// Continuous seek always re-encodes A+V
+		strategy = "full transcode (seek)"
 	}
 
 	// Pure remux (-c copy both) skips semaphore; audio-only / full encode hit it.
@@ -352,8 +355,12 @@ func buildFFmpegArgs(absPath string, probe *ProbeResult, startSec, durationSec f
 
 	videoOK := probe != nil && VideoCodecCompatible(probe.VideoCodec())
 	audioOK := probe != nil && AudioCodecCompatible(probe.AudioCodec())
+	// Continuous seek (?t= > 0): force re-encode A+V so both streams start at 0
+	// together. -c:v copy + -c:a aac after input -ss causes A/V desync (keyframe snap).
+	forceSeekReencode := !isHLS && startSec > 0 && burnSubIndex < 0
+
 	// HW only when we actually encode video
-	needsVideoEncode := burnSubIndex >= 0 || !videoOK
+	needsVideoEncode := burnSubIndex >= 0 || !videoOK || forceSeekReencode
 	needsHWAccel := hwAccel != "" && needsVideoEncode
 
 	if burnSubIndex >= 0 {
@@ -401,11 +408,16 @@ func buildFFmpegArgs(absPath string, probe *ProbeResult, startSec, durationSec f
 
 	var codecArgs []string
 	switch {
+	case forceSeekReencode:
+		// Seek reload: encode both (ultrafast) so A/V timestamps align at 0
+		codecArgs = buildHLSVideoEncoder()
+		codecArgs = append(codecArgs, "-c:a", "aac", "-b:a", "192k", "-ac", "2",
+			"-af", "aresample=async=1:first_pts=0")
 	case videoOK && audioOK:
-		// Remux both — HLS copy is OK; EXTINF may be slightly off near GOP, still playable
+		// Remux both — OK for start-from-zero and HLS segments
 		codecArgs = []string{"-c", "copy"}
 	case videoOK && !audioOK:
-		// H.264 + AC3/DTS: copy video, encode AAC only (critical for Train to Busan)
+		// H.264 + AC3/DTS from start: copy video, encode AAC only
 		codecArgs = []string{"-c:v", "copy", "-c:a", "aac", "-b:a", "192k", "-ac", "2"}
 	default:
 		if isHLS {

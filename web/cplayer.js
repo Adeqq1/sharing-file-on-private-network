@@ -29,7 +29,9 @@ const cplayer = {
     // ── Seek support untuk video transcode ──
     transcodeOffset: 0,      // detik offset saat ini untuk video transcode (0 = dari awal)
     totalDuration: 0,        // durasi penuh video dari /api/probe (untuk display & seek)
-    isTranscoded: false,     // true kalau src berasal dari /api/transcode
+    isTranscoded: false,     // true kalau continuous /api/transcode (?t= seek)
+    isHLS: false,            // true kalau /api/hls — timeline absolut, seek native
+    hls: null,               // instance hls.js aktif
     pendingSeek: null,       // detik tujuan saat seek sedang dalam proses (untuk debounce)
     // ── Burn-in subtitle (PGS) ──
     burnSubIndex: -1,        // stream index PGS yang sedang di-burn-in (-1 = tidak ada)
@@ -115,29 +117,16 @@ function setupVideoEvents() {
 
   v.addEventListener('loadedmetadata', () => {
     updateTimeUI();
-    // Resume playback position
     const path = cplayer.state.currentPath;
     if (!path) return;
 
-    // Skip auto-resume kalau sudah di-reload dari offset (transcodeOffset > 0)
-    if (cplayer.state.transcodeOffset > 0) return;
+    // HLS: resume lewat startPosition di attachHLSSource — jangan double-seek
+    if (cplayer.state.isHLS) return;
 
-    // Skip auto-resume kalau ada seek yang sedang pending (user sudah seek manual)
+    if (cplayer.state.transcodeOffset > 0) return;
     if (cplayer.state.pendingSeek != null) return;
 
-    // Ambil posisi dari cache watchHistoryByPath (sudah di-fetch oleh app.js loadFiles).
-    // Tidak re-fetch /api/history di sini untuk menghindari round-trip dobel dan delay.
-    // Fallback ke localStorage kalau cache belum ada (mis. buka langsung dari URL).
-    let saved = 0;
-    const histEntry = window.watchHistoryByPath?.[path];
-    if (histEntry && !histEntry.completed) {
-      saved = histEntry.position_sec;
-    }
-    if (saved === 0) {
-      saved = parseFloat(localStorage.getItem('cp_pos_' + path) || '0');
-    }
-
-    _tryResume(saved);
+    _tryResume(savedResumePosition(path));
   });
 
   // Pakai requestAnimationFrame untuk update progress (poin #22)
@@ -800,28 +789,18 @@ function switchSubtitleEntry(entry) {
 
   const path = cplayer.state.currentPath;
 
-  // KASUS BARU: subtitle image-based (PGS, VobSub) → butuh burn-in via transcode
+  // Image-based (PGS/VobSub) → burn-in via HLS segments
   if (entry.image && entry.track !== undefined) {
-    console.log('[sub] image-based → burn-in via transcode, track:', entry.track);
+    console.log('[sub] image-based → burn-in HLS, track:', entry.track);
     showToastFromPlayer('🎨 Memuat ulang dengan subtitle ditanam ke video...');
     const curPos = effectiveCurrentTime();
-    const t = Math.max(0, Math.floor(curPos));
-    const params = new URLSearchParams({ path, t, burnSub: entry.track });
-    const url = '/api/transcode?' + params.toString();
-
-    cplayer.state.transcodeOffset = t;
-    cplayer.state.isTranscoded = true;
     cplayer.state.currentLang = entry.lang || '';
     cplayer.state.ccEnabled = true;
-    cplayer.state.burnSubIndex = entry.track; // simpan agar seek preserve burn-in
-
-    const v = cplayer.video;
-    const wasPaused = v.paused;
-    v.src = url;
-    v.load();
-    if (!wasPaused) {
-      v.addEventListener('canplay', () => v.play().catch(() => {}), { once: true });
-    }
+    cplayer.state.burnSubIndex = entry.track;
+    const params = new URLSearchParams({ path, burnSub: String(entry.track) });
+    const url = '/api/hls/playlist?' + params.toString();
+    const wasPaused = cplayer.video.paused;
+    attachHLSSource(url, { resumeAt: curPos, autoplay: !wasPaused });
     return;
   }
 
@@ -887,26 +866,17 @@ function switchSubtitleEntry(entry) {
 function toggleCC(forceState) {
   const newState = (forceState !== undefined) ? forceState : !cplayer.state.ccEnabled;
 
-  // Kalau sedang burn-in mode (PGS) dan user minta Off → reload video tanpa burnSub
-  if (!newState && cplayer.state.burnSubIndex >= 0 && cplayer.state.isTranscoded) {
+  // Burn-in Off → reload HLS tanpa burnSub
+  if (!newState && cplayer.state.burnSubIndex >= 0 && (cplayer.state.isHLS || cplayer.state.isTranscoded)) {
     const path = cplayer.state.currentPath;
     if (path) {
       showToastFromPlayer('🔄 Memuat ulang tanpa subtitle...');
-      const t = Math.max(0, Math.floor(effectiveCurrentTime()));
-      const params = new URLSearchParams({ path, t });
-      const url = '/api/transcode?' + params.toString();
-
+      const curPos = effectiveCurrentTime();
       cplayer.state.burnSubIndex = -1;
       cplayer.state.ccEnabled = false;
-      cplayer.state.transcodeOffset = t;
-
-      const v = cplayer.video;
-      const wasPaused = v.paused;
-      v.src = url;
-      v.load();
-      if (!wasPaused) {
-        v.addEventListener('canplay', () => v.play().catch(() => {}), { once: true });
-      }
+      const url = '/api/hls/playlist?path=' + encodeURIComponent(path);
+      const wasPaused = cplayer.video.paused;
+      attachHLSSource(url, { resumeAt: curPos, autoplay: !wasPaused });
       return;
     }
   }
@@ -1314,11 +1284,11 @@ function seekToPointer(e) {
   if (!isFinite(fullDur) || fullDur <= 0) return;
   const targetTime = ratio * fullDur;
 
-  if (cplayer.state.isTranscoded) {
-    // Video transcode: tidak bisa native seek, harus reload src dengan ?t=...
+  if (cplayer.state.isTranscoded && !cplayer.state.isHLS) {
+    // Continuous fMP4: reload src dengan ?t=...
     requestTranscodeSeek(targetTime);
   } else {
-    // Native: seek HTML5 seperti biasa
+    // Native / HLS: timeline absolut
     cplayer.video.currentTime = targetTime;
   }
   updateProgressUI();
@@ -1327,28 +1297,28 @@ function seekToPointer(e) {
 // ── Seek helpers untuk video transcode ──────────────────────────────────────
 
 // effectiveDuration: durasi penuh untuk display.
-// Untuk transcode pakai totalDuration dari /api/probe, untuk native pakai video.duration.
+// Transcode continuous / HLS: totalDuration dari probe; native: video.duration.
 function effectiveDuration() {
-  if (cplayer.state.isTranscoded && cplayer.state.totalDuration > 0) {
+  if ((cplayer.state.isTranscoded || cplayer.state.isHLS) && cplayer.state.totalDuration > 0) {
     return cplayer.state.totalDuration;
   }
   return cplayer.video?.duration ?? 0;
 }
 
-// effectiveCurrentTime: posisi absolut dalam video (offset + native currentTime).
+// effectiveCurrentTime: posisi absolut (offset hanya untuk continuous ?t= path).
 function effectiveCurrentTime() {
   const native = cplayer.video?.currentTime ?? 0;
-  if (cplayer.state.isTranscoded) {
+  if (cplayer.state.isTranscoded && !cplayer.state.isHLS) {
     return cplayer.state.transcodeOffset + native;
   }
   return native;
 }
 
-// seekRelative: skip ±N detik, otomatis pilih native seek atau reload transcode.
+// seekRelative: skip ±N detik.
 function seekRelative(deltaSec) {
   const cur = effectiveCurrentTime();
   const target = Math.max(0, Math.min(effectiveDuration() || 0, cur + deltaSec));
-  if (cplayer.state.isTranscoded) {
+  if (cplayer.state.isTranscoded && !cplayer.state.isHLS) {
     requestTranscodeSeek(target);
   } else if (cplayer.video) {
     cplayer.video.currentTime = target;
@@ -1487,9 +1457,8 @@ function updateBufferedUI() {
   if (!isFinite(dur) || dur === 0) return;
   const buf = cplayer.video.buffered;
   if (buf.length > 0) {
-    // Untuk video transcode, buffered.end() relatif terhadap offset saat ini.
-    // Tambahkan transcodeOffset agar posisi buffered sesuai dengan progress bar absolut.
-    const offset = cplayer.state.transcodeOffset || 0;
+    // Continuous ?t= only: buffered relative to offset. HLS/native: absolute.
+    const offset = (cplayer.state.isTranscoded && !cplayer.state.isHLS) ? (cplayer.state.transcodeOffset || 0) : 0;
     const bufferedEnd = buf.end(buf.length - 1) + offset;
     const pct = Math.min(100, (bufferedEnd / dur) * 100);
     cplayer.dom.buffered.style.width = pct + '%';
@@ -1657,12 +1626,13 @@ function resetCplayer() {
   cplayer.state.currentSubIdx = -1;  // reset index subtitle aktif
   cplayer.state.iosNativeFullscreen = false;
 
-  // Reset state seek transcode
+  destroyHLS();
   cplayer.state.transcodeOffset = 0;
   cplayer.state.totalDuration   = 0;
   cplayer.state.isTranscoded    = false;
+  cplayer.state.isHLS           = false;
   cplayer.state.pendingSeek     = null;
-  cplayer.state.burnSubIndex    = -1; // reset burn-in mode
+  cplayer.state.burnSubIndex    = -1;
   clearTimeout(_seekDebounceTimer);
 
   // Cabut Blob URL subtitle agar tidak memory leak
@@ -1705,29 +1675,143 @@ function setPlayerItem(item, path) {
 function setTotalDuration(durationSec, isTranscoded) {
   const wasZero = cplayer.state.totalDuration === 0;
   cplayer.state.totalDuration = durationSec || 0;
-  cplayer.state.isTranscoded  = !!isTranscoded;
-  // TIDAK reset transcodeOffset di sini — lihat komentar di atas.
+  // isHLS: treat as seekable native timeline; isTranscoded only for continuous ?t= path
+  if (cplayer.state.isHLS) {
+    cplayer.state.isTranscoded = false;
+  } else {
+    cplayer.state.isTranscoded = !!isTranscoded;
+  }
 
-  // Kalau probe baru balik dengan durasi sesungguhnya (sebelumnya 0),
-  // coba resume — ini fix race condition antara loadedmetadata dan probe.
-  // Guard: hanya kalau video masih di awal (belum di-seek manual oleh user).
+  // HLS resume via startPosition — jangan double-seek dari probe callback
+  if (cplayer.state.isHLS) return;
+
   if (wasZero && durationSec > 0 && cplayer.state.currentPath) {
     const path = cplayer.state.currentPath;
     const currentAbsPos = effectiveCurrentTime();
-    // Hanya resume kalau posisi absolut masih di awal (user belum seek)
     if (currentAbsPos < RESUME_MIN_SEC) {
-      const histEntry = window.watchHistoryByPath?.[path];
-      let saved = histEntry && !histEntry.completed ? histEntry.position_sec : 0;
-      if (saved === 0) saved = parseFloat(localStorage.getItem('cp_pos_' + path) || '0');
-      _tryResume(saved);
+      _tryResume(savedResumePosition(path));
     }
   }
 }
 
+// destroyHLS: lepas hls.js agar tidak leak buffer antar video.
+function destroyHLS() {
+  if (cplayer.state.hls) {
+    try {
+      cplayer.state.hls.destroy();
+    } catch (_) { /* ignore */ }
+    cplayer.state.hls = null;
+  }
+}
+
+// savedResumePosition: history server / localStorage untuk path aktif.
+function savedResumePosition(path) {
+  if (!path) return 0;
+  const histEntry = window.watchHistoryByPath?.[path];
+  if (histEntry && !histEntry.completed && histEntry.position_sec > 0) {
+    return histEntry.position_sec;
+  }
+  return parseFloat(localStorage.getItem('cp_pos_' + path) || '0') || 0;
+}
+
+// attachHLSSource: pasang playlist HLS ke <video>.
+// opts: { resumeAt, autoplay }
+// resumeAt / startPosition: minta segmen target dulu (bukan seg 0).
+function attachHLSSource(playlistURL, opts) {
+  opts = opts || {};
+  const v = cplayer.video;
+  if (!v) return;
+
+  destroyHLS();
+  cplayer.state.isHLS = true;
+  cplayer.state.isTranscoded = false;
+  cplayer.state.transcodeOffset = 0;
+
+  let resumeAt = opts.resumeAt;
+  if (resumeAt == null) {
+    resumeAt = savedResumePosition(cplayer.state.currentPath);
+  }
+  const autoplay = opts.autoplay !== false;
+  const startAt = (typeof resumeAt === 'number' && resumeAt > RESUME_MIN_SEC) ? resumeAt : -1;
+
+  const onReady = () => {
+    // startPosition sudah di-set di config hls; fallback currentTime untuk native
+    if (startAt > 0 && (!cplayer.state.hls || v.currentTime < RESUME_MIN_SEC)) {
+      try { v.currentTime = startAt; } catch (_) {}
+    }
+    if (autoplay) v.play().catch(() => {});
+    if (startAt > RESUME_MIN_SEC) {
+      showToastFromPlayer(`▶ Lanjut dari ${formatTime(startAt)}`);
+    }
+  };
+
+  if (cplayer.dom.spinner) cplayer.dom.spinner.classList.remove('hidden');
+
+  if (window.Hls && Hls.isSupported()) {
+    const hlsOpts = {
+      enableWorker: true,
+      // Buffer kecil: seek jauh = 1 encode, bukan 8 segmen concurrent
+      maxBufferLength: 12,
+      maxMaxBufferLength: 24,
+      maxBufferSize: 20 * 1000 * 1000,
+      startLevel: -1,
+      // Encode on-demand bisa 30–90s (HEVC software) — jangan abort 20s
+      fragLoadTimeout: 120000,
+      manifestLoadingTimeOut: 30000,
+      levelLoadingTimeOut: 30000,
+      fragLoadingMaxRetry: 4,
+      fragLoadingRetryDelay: 1000,
+    };
+    // startPosition: load fragment di t=resume dulu (hindari encode seg 0 sia-sia)
+    if (startAt > 0) {
+      hlsOpts.startPosition = startAt;
+    }
+    const hls = new Hls(hlsOpts);
+    cplayer.state.hls = hls;
+    hls.loadSource(playlistURL);
+    hls.attachMedia(v);
+    hls.on(Hls.Events.MANIFEST_PARSED, () => onReady());
+    hls.on(Hls.Events.ERROR, (_, data) => {
+      if (!data.fatal) return;
+      console.error('[hls] fatal', data.type, data.details);
+      if (data.type === Hls.ErrorTypes.NETWORK_ERROR) {
+        hls.startLoad();
+      } else if (data.type === Hls.ErrorTypes.MEDIA_ERROR) {
+        hls.recoverMediaError();
+      } else {
+        destroyHLS();
+        showToastFromPlayer('⚠ Gagal memutar stream HLS');
+      }
+    });
+    return;
+  }
+
+  // Safari/iOS tanpa MSE: native HLS — seek setelah metadata
+  if (v.canPlayType('application/vnd.apple.mpegurl')) {
+    v.src = playlistURL;
+    v.load();
+    v.addEventListener('loadedmetadata', onReady, { once: true });
+    return;
+  }
+
+  // Fallback: continuous transcode
+  cplayer.state.isHLS = false;
+  cplayer.state.isTranscoded = true;
+  const path = cplayer.state.currentPath;
+  let url = '/api/transcode?path=' + encodeURIComponent(path || '');
+  if (cplayer.state.burnSubIndex >= 0) {
+    url += '&burnSub=' + cplayer.state.burnSubIndex;
+  }
+  if (startAt > 0) {
+    url += '&t=' + Math.floor(startAt);
+    cplayer.state.transcodeOffset = Math.floor(startAt);
+  }
+  v.src = url;
+  v.load();
+  if (autoplay) v.addEventListener('canplay', () => v.play().catch(() => {}), { once: true });
+}
+
 // _tryResume: coba resume ke posisi tersimpan kalau valid.
-// Dipanggil dari loadedmetadata dan dari setTotalDuration (untuk fix race condition).
-// Guard: kalau video sudah di posisi yang benar (misal setelah seek manual),
-// jangan resume lagi agar tidak override posisi user.
 function _tryResume(saved) {
   if (!saved || saved <= 0) return;
   const fullDur = effectiveDuration();
@@ -1735,12 +1819,10 @@ function _tryResume(saved) {
   if (saved <= RESUME_MIN_SEC) return;
   if (saved >= fullDur - RESUME_MARGIN_SEC) return;
 
-  // Guard: jangan resume kalau video sudah di posisi yang signifikan.
-  // Ini mencegah resume override seek manual yang dilakukan user sebelum probe balik.
   const currentAbsPos = effectiveCurrentTime();
   if (currentAbsPos > RESUME_MIN_SEC) return;
 
-  if (cplayer.state.isTranscoded) {
+  if (cplayer.state.isTranscoded && !cplayer.state.isHLS) {
     requestTranscodeSeek(saved);
   } else if (cplayer.video) {
     cplayer.video.currentTime = saved;

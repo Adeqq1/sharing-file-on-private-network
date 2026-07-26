@@ -521,46 +521,19 @@ function openPlayer(item) {
   if (typeof setPlayerItem === 'function') setPlayerItem(item, filePathOf(item));
   if (typeof setQueue === 'function') setQueue(state.allItems, item);
 
-  // Untuk video transcode, set flag isTranscoded segera (synchronous) agar
-  // effectiveDuration() sudah tahu mode transcode sebelum loadedmetadata fire.
-  // Durasi total (totalDuration) diisi setelah probe balik — kalau probe lambat,
-  // effectiveDuration() fallback ke video.duration native sampai probe selesai.
-  //
-  // PENTING: setTotalDuration(0, true) hanya set flag isTranscoded, TIDAK reset
-  // transcodeOffset. Ini aman karena resetCplayer() sudah dipanggil di atas
-  // yang memastikan transcodeOffset = 0 saat buka video baru.
+  // needs_transcode → HLS (timeline absolut). Probe isi totalDuration untuk progress bar.
   if (item.needs_transcode && item.streamable === 'video') {
-    if (typeof setTotalDuration === 'function') setTotalDuration(0, true); // set flag dulu, durasi menyusul
+    if (cplayer.state) cplayer.state.isHLS = true;
+    if (typeof setTotalDuration === 'function') setTotalDuration(0, false);
     fetch('/api/probe?path=' + encodeURIComponent(filePathOf(item)))
       .then(r => r.ok ? r.json() : null)
       .then(probe => {
         if (!probe || !probe.duration) return;
-        if (typeof setTotalDuration === 'function') {
-          // Pastikan ini masih untuk video yang sama (user belum ganti video)
-          if (cplayer.state && cplayer.state.currentPath === filePathOf(item)) {
-            // Cek apakah file ini akan di-serve native (CanDirectServe di backend).
-            // Kalau codec video+audio kompatibel browser, backend akan redirect ke
-            // /api/stream (native seek, ~0% CPU). Dalam kasus ini isTranscoded = false
-            // agar seek pakai native video.currentTime, bukan reload ffmpeg.
-            //
-            // Logika ini mirror CanDirectServe() di probe.go:
-            //   - video codec: h264/avc/vp8/vp9/av1 (atau tidak ada video)
-            //   - audio codec: aac/mp3/opus/vorbis/mp2 (atau tidak ada audio)
-            const compatVideoCodecs = ['h264', 'avc', 'vp8', 'vp9', 'av1'];
-            const compatAudioCodecs = ['aac', 'mp3', 'opus', 'vorbis', 'mp2'];
-            const videoStream = (probe.streams || []).find(s => s.type === 'video');
-            const audioStream = (probe.streams || []).find(s => s.type === 'audio');
-            const videoOK = !videoStream || compatVideoCodecs.includes((videoStream.codec || '').toLowerCase());
-            const audioOK = !audioStream || compatAudioCodecs.includes((audioStream.codec || '').toLowerCase());
-            const willDirectServe = videoOK && audioOK;
-
-            // isTranscoded = false kalau akan di-serve native (seek pakai video.currentTime)
-            // isTranscoded = true kalau butuh ffmpeg (seek pakai ?t= reload)
-            setTotalDuration(probe.duration, !willDirectServe);
-          }
+        if (cplayer.state && cplayer.state.currentPath === filePathOf(item) && typeof setTotalDuration === 'function') {
+          setTotalDuration(probe.duration, false);
         }
       })
-      .catch(() => { /* probe gagal — effectiveDuration() fallback ke video.duration */ });
+      .catch(() => {});
   } else {
     if (typeof setTotalDuration === 'function') setTotalDuration(0, false);
   }
@@ -598,12 +571,11 @@ function openPlayer(item) {
         if (spinnerEl && !spinnerEl.classList.contains('hidden') && !spinnerEl.querySelector('.spinner-msg')) {
           const msg = document.createElement('p');
           msg.className = 'spinner-msg';
-          msg.textContent = 'Memproses video... (HEVC/transcode bisa 10–30 detik)';
+          msg.textContent = 'Menyiapkan potongan video... (seek/resume pertama bisa 10–60 detik)';
           msg.style.cssText = 'color:#fff;font-size:.8rem;margin-top:8px;text-align:center;opacity:.8;padding:0 16px';
           spinnerEl.appendChild(msg);
         }
-      }, 5000);
-      // Bersihkan timer kalau player ditutup sebelum 5 detik
+      }, 3000);
       playerAbort.signal.addEventListener('abort', () => clearTimeout(slowTranscodeTimer));
     }
 
@@ -611,9 +583,9 @@ function openPlayer(item) {
       playerSpinner.classList.add('hidden');
       const code = playerVideo.error?.code;
       const ext = (item.ext || '').toLowerCase();
-      const isTranscodeURL = streamURL.startsWith('/api/transcode');
+      const isChunked = streamURL.startsWith('/api/hls') || streamURL.startsWith('/api/transcode');
       let msg;
-      if (isTranscodeURL) {
+      if (isChunked) {
         msg = 'Format ini tidak bisa diputar di browser. Server kamu mungkin belum punya ffmpeg, atau file rusak.';
       } else if (code === 4 && (ext === 'mkv' || ext === 'avi' || ext === 'wmv' || ext === 'flv')) {
         msg = `Format ${ext.toUpperCase()} tidak didukung browser ini. Coba Chrome Android atau download ke VLC/MX Player.`;
@@ -630,14 +602,23 @@ function openPlayer(item) {
       if (playerError) playerError.classList.remove('hidden');
     }, { once: true, signal: sig });
 
-    // Tampilkan toast informasi transcoding (sekali per session)
     if (item.needs_transcode && !sessionStorage.getItem('cp_transcodeHint')) {
       sessionStorage.setItem('cp_transcodeHint', '1');
-      setTimeout(() => showToast('🎬 Konversi format on-the-fly... CPU laptop akan naik sebentar.'), 500);
+      setTimeout(() => showToast('🎬 Streaming potongan HLS... segment pertama bisa 10–30 detik.'), 500);
     }
 
-    playerVideo.src = streamURL;
-    playerVideo.load();
+    if (streamURL.startsWith('/api/hls') && typeof attachHLSSource === 'function') {
+      // resumeAt: startPosition di hls.js → minta segmen 1:33 dulu, bukan seg 0
+      const path = filePathOf(item);
+      let resumeAt = 0;
+      const hist = window.watchHistoryByPath?.[path];
+      if (hist && !hist.completed) resumeAt = hist.position_sec || 0;
+      if (!resumeAt) resumeAt = parseFloat(localStorage.getItem('cp_pos_' + path) || '0') || 0;
+      attachHLSSource(streamURL, { autoplay: true, resumeAt: resumeAt > 5 ? resumeAt : undefined });
+    } else {
+      playerVideo.src = streamURL;
+      playerVideo.load();
+    }
 
     // Setup subtitle DITUNDA sampai video benar-benar mulai play.
     //
@@ -691,12 +672,10 @@ function openPlayer(item) {
 
 // ===== Pemilihan URL Stream =====
 
-// pickStreamURL memilih endpoint stream yang tepat berdasarkan format file.
-// Format yang kemungkinan butuh transcode (mkv, avi, wmv, flv, ts) → /api/transcode
-// Format browser-native (mp4, webm, mp3, dll) → /api/stream
+// pickStreamURL: needs_transcode → HLS playlist; native → /api/stream
 function pickStreamURL(item) {
   if (item.needs_transcode) {
-    return '/api/transcode?path=' + encodeURIComponent(filePathOf(item));
+    return '/api/hls/playlist?path=' + encodeURIComponent(filePathOf(item));
   }
   return '/api/stream?path=' + encodeURIComponent(filePathOf(item));
 }

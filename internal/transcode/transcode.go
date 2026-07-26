@@ -254,14 +254,29 @@ func MaxTranscodes() int {
 // Untuk full/audio transcode, semaphore dipakai agar max 2 proses berjalan
 // bersamaan. Remux tidak dibatasi karena hampir tidak pakai CPU.
 func Stream(ctx context.Context, absPath string, probe *ProbeResult, startSec float64, burnSubIndex int, out io.Writer) error {
-	args := buildFFmpegArgs(absPath, probe, startSec, burnSubIndex)
-	// Burn-in selalu butuh full transcode — paksa strategy bukan remux
+	return runFFmpeg(ctx, absPath, probe, startSec, 0, burnSubIndex, "mp4", out)
+}
+
+// StreamSegment encode satu potongan HLS (MPEG-TS) dari startSec selama durationSec.
+// Dipakai cache segment di internal/hls.
+func StreamSegment(ctx context.Context, absPath string, probe *ProbeResult, startSec, durationSec float64, burnSubIndex int, out io.Writer) error {
+	if durationSec <= 0 {
+		return fmt.Errorf("durationSec harus > 0")
+	}
+	return runFFmpeg(ctx, absPath, probe, startSec, durationSec, burnSubIndex, "mpegts", out)
+}
+
+func runFFmpeg(ctx context.Context, absPath string, probe *ProbeResult, startSec, durationSec float64, burnSubIndex int, outFormat string, out io.Writer) error {
+	args := buildFFmpegArgs(absPath, probe, startSec, durationSec, burnSubIndex, outFormat)
 	strategy := strategyName(probe)
 	if burnSubIndex >= 0 {
 		strategy = "full transcode (burn-in)"
+	} else if outFormat == "mpegts" {
+		// HLS: remux/copy tidak hit semaphore; encode full/audio-only hit.
+		strategy = hlsStrategyName(probe)
 	}
 
-	// Batasi concurrent transcode (bukan remux) via semaphore
+	// Hanya pure remux (-c copy) yang skip semaphore.
 	if strategy != "remux" {
 		if !acquireTranscode(ctx) {
 			return ctx.Err()
@@ -270,22 +285,20 @@ func Stream(ctx context.Context, absPath string, probe *ProbeResult, startSec fl
 	}
 
 	cmd := exec.CommandContext(ctx, ffmpegPath, args...)
-
-	// Capture stderr ke buffer terbatas (10 KB) untuk logging error.
 	var stderrBuf bytes.Buffer
 	cmd.Stderr = &limitedWriter{w: &stderrBuf, limit: 10 * 1024}
 	cmd.Stdout = out
 
-	if startSec > 0 {
+	if durationSec > 0 {
+		log.Printf("[transcode] segment: %s (%s, t=%.1fs len=%.1fs %s)", absPath, strategy, startSec, durationSec, outFormat)
+	} else if startSec > 0 {
 		log.Printf("[transcode] start: %s (%s, t=%.1fs)", absPath, strategy, startSec)
 	} else {
 		log.Printf("[transcode] start: %s (%s)", absPath, strategy)
 	}
 
 	err := cmd.Run()
-
 	if ctx.Err() != nil {
-		// Request di-cancel oleh client (user tutup player) — bukan error nyata.
 		log.Printf("[transcode] dibatalkan: %s", absPath)
 		return ctx.Err()
 	}
@@ -298,55 +311,37 @@ func Stream(ctx context.Context, absPath string, probe *ProbeResult, startSec fl
 		}
 		return err
 	}
-
-	log.Printf("[transcode] selesai: %s", absPath)
+	if durationSec <= 0 {
+		log.Printf("[transcode] selesai: %s", absPath)
+	}
 	return nil
 }
 
+// hlsStrategyName: HLS potongan selalu re-encode (timeline akurat).
+func hlsStrategyName(probe *ProbeResult) string {
+	return "full transcode (hls)"
+}
+
 // buildFFmpegArgs memilih argumen ffmpeg berdasarkan codec di probe.
-// startSec > 0 menambahkan -ss sebelum -i (input seek — cepat, lompat ke keyframe terdekat).
-// burnSubIndex >= 0 mengaktifkan burn-in subtitle via -vf subtitles filter.
-func buildFFmpegArgs(absPath string, probe *ProbeResult, startSec float64, burnSubIndex int) []string {
-	// Argumen dasar: tidak tampilkan banner, tidak interaktif
-	base := []string{
-		"-hide_banner", "-loglevel", "error",
+// startSec > 0 → -ss sebelum -i. durationSec > 0 → -t setelah -i (potongan HLS).
+// outFormat: "mp4" (fMP4 continuous) atau "mpegts" (segmen HLS mandiri).
+// burnSubIndex >= 0 mengaktifkan burn-in subtitle image-based.
+//
+// HLS (mpegts): SELALU re-encode (ultrafast). -c copy mengabaikan -t di keyframe
+// non-boundary → durasi segmen 9s+ padahal playlist bilang 4s → seek/resume hang.
+func buildFFmpegArgs(absPath string, probe *ProbeResult, startSec, durationSec float64, burnSubIndex int, outFormat string) []string {
+	if outFormat == "" {
+		outFormat = "mp4"
 	}
+	isHLS := outFormat == "mpegts"
 
-	// Input seek: pakai -ss SEBELUM -i (fast seek, lompat ke keyframe terdekat).
-	// Hanya tambahkan kalau startSec > 0 untuk hindari overhead di playback awal.
-	if startSec > 0 {
-		// Precision 1 desimal cukup — frontend sudah Math.floor, dan ffmpeg
-		// lompat ke keyframe terdekat (resolusi GOP 2-10 detik).
-		base = append(base, "-ss", strconv.FormatFloat(startSec, 'f', 1, 64))
-	}
-
-	// Hardware decode acceleration — hanya aktifkan untuk full-transcode (bukan remux/copy).
-	// Untuk remux, -hwaccel hanya menambah overhead inisialisasi GPU context tanpa manfaat.
-	// Kita tentukan strategi dulu, baru tambahkan flag kalau memang butuh encode.
 	videoOK := probe != nil && VideoCodecCompatible(probe.VideoCodec())
 	audioOK := probe != nil && AudioCodecCompatible(probe.AudioCodec())
-	needsHWAccel := hwAccel != "" && !(videoOK && audioOK) // bukan remux path
-	if needsHWAccel {
-		base = append(base, "-hwaccel", "auto")
-	}
+	needsHWAccel := hwAccel != "" && (isHLS || !videoOK || burnSubIndex >= 0)
 
-	base = append(base,
-		"-i", absPath,
-		"-map", "0:v:0",
-		"-map", "0:a:0?", // "?" = opsional, kalau tidak ada audio tetap jalan
-	)
-
-	var codecArgs []string
 	if burnSubIndex >= 0 {
-		// Burn-in subtitle image-based (PGS/VobSub): harus pakai -filter_complex overlay,
-		// BUKAN -vf subtitles= yang hanya support text-based (SRT/ASS/mov_text).
-		//
-		// Syntax: -filter_complex "[0:v][0:s:N]overlay[v]" -map "[v]" -map 0:a:0?
-		// di mana N adalah index relatif di antara subtitle stream (bukan global stream index).
 		si := subStreamIndex(probe, burnSubIndex)
 		filterComplex := fmt.Sprintf("[0:v][0:s:%d]overlay[v]", si)
-		// Hapus -map 0:v:0 dan -map 0:a:0? dari base karena akan di-override oleh filter_complex
-		// Kita rebuild args dari awal untuk burn-in agar tidak konflik dengan -map di base.
 		burnBase := []string{"-hide_banner", "-loglevel", "error"}
 		if hwAccel != "" {
 			burnBase = append(burnBase, "-hwaccel", "auto")
@@ -355,57 +350,103 @@ func buildFFmpegArgs(absPath string, probe *ProbeResult, startSec float64, burnS
 			burnBase = append(burnBase, "-ss", strconv.FormatFloat(startSec, 'f', 1, 64))
 		}
 		burnBase = append(burnBase, "-i", absPath)
+		if durationSec > 0 {
+			burnBase = append(burnBase, "-t", strconv.FormatFloat(durationSec, 'f', 1, 64))
+		}
 		burnArgs := append(burnBase,
 			"-filter_complex", filterComplex,
 			"-map", "[v]",
 			"-map", "0:a:0?",
 		)
-		burnArgs = append(burnArgs, buildVideoEncoder()...)
-		burnArgs = append(burnArgs,
-			"-c:a", "aac", "-b:a", "192k", "-ac", "2",
-			"-f", "mp4",
-			"-movflags", "frag_keyframe+empty_moov+default_base_moof",
-			"-reset_timestamps", "1",
-			"pipe:1",
-		)
-		return burnArgs
-	} else {
-		switch {
-		case videoOK && audioOK:
-			// Remux: copy semua stream tanpa re-encode (~0% CPU)
-			codecArgs = []string{"-c", "copy"}
-		case videoOK && !audioOK:
-			// Audio transcode only: video di-copy, audio di-encode ke AAC stereo
-			codecArgs = []string{
-				"-c:v", "copy",
-				"-c:a", "aac", "-b:a", "192k", "-ac", "2",
-			}
-		default:
-			// Full transcode: video ke H.264 (HW jika tersedia), audio ke AAC
-			codecArgs = buildVideoEncoder()
-			codecArgs = append(codecArgs,
-				"-c:a", "aac", "-b:a", "192k", "-ac", "2",
-			)
+		if isHLS {
+			burnArgs = append(burnArgs, buildHLSVideoEncoder()...)
+		} else {
+			burnArgs = append(burnArgs, buildVideoEncoder()...)
 		}
+		burnArgs = append(burnArgs, "-c:a", "aac", "-b:a", "192k", "-ac", "2")
+		burnArgs = append(burnArgs, outputFormatArgs(outFormat)...)
+		return burnArgs
 	}
 
-	// Output: fragmented MP4 ke stdout (pipe:1)
-	// frag_keyframe+empty_moov+default_base_moof = bisa di-play sebelum file selesai
-	outputArgs := []string{
+	base := []string{"-hide_banner", "-loglevel", "error"}
+	if startSec > 0 {
+		base = append(base, "-ss", strconv.FormatFloat(startSec, 'f', 1, 64))
+	}
+	if needsHWAccel {
+		base = append(base, "-hwaccel", "auto")
+	}
+	base = append(base, "-i", absPath)
+	if durationSec > 0 {
+		base = append(base, "-t", strconv.FormatFloat(durationSec, 'f', 1, 64))
+	}
+	base = append(base, "-map", "0:v:0", "-map", "0:a:0?")
+
+	var codecArgs []string
+	switch {
+	case isHLS:
+		// Accurate segment length + AAC for AC3/DTS sources (e.g. Train to Busan)
+		codecArgs = buildHLSVideoEncoder()
+		codecArgs = append(codecArgs, "-c:a", "aac", "-b:a", "192k", "-ac", "2")
+	case videoOK && audioOK:
+		codecArgs = []string{"-c", "copy"}
+	case videoOK && !audioOK:
+		codecArgs = []string{"-c:v", "copy", "-c:a", "aac", "-b:a", "192k", "-ac", "2"}
+	default:
+		codecArgs = buildVideoEncoder()
+		codecArgs = append(codecArgs, "-c:a", "aac", "-b:a", "192k", "-ac", "2")
+	}
+
+	total := len(base) + len(codecArgs) + 8
+	args := make([]string, 0, total)
+	args = append(args, base...)
+	args = append(args, codecArgs...)
+	args = append(args, outputFormatArgs(outFormat)...)
+	return args
+}
+
+// buildHLSVideoEncoder: preset super-cepat untuk potongan HLS on-demand.
+// Kualitas lebih rendah dari continuous stream — prioritas first-byte / seek.
+func buildHLSVideoEncoder() []string {
+	switch hwAccel {
+	case "nvenc":
+		return []string{
+			"-c:v", "h264_nvenc",
+			"-preset", "fast",
+			"-rc", "vbr",
+			"-cq", "28",
+			"-b:v", "3M",
+			"-maxrate", "5M",
+			"-g", "48",
+			"-pix_fmt", "yuv420p",
+		}
+	case "qsv":
+		return []string{"-c:v", "h264_qsv", "-preset", "veryfast", "-global_quality", "28", "-g", "48", "-pix_fmt", "yuv420p"}
+	case "amf":
+		return []string{"-c:v", "h264_amf", "-quality", "speed", "-rc", "cqp", "-qp_i", "28", "-qp_p", "30", "-g", "48", "-pix_fmt", "yuv420p"}
+	case "videotoolbox":
+		return []string{"-c:v", "h264_videotoolbox", "-b:v", "3M", "-g", "48", "-pix_fmt", "yuv420p"}
+	default:
+		return []string{
+			"-c:v", "libx264",
+			"-preset", "ultrafast",
+			"-tune", "zerolatency",
+			"-crf", "28",
+			"-g", "48",
+			"-pix_fmt", "yuv420p",
+		}
+	}
+}
+
+func outputFormatArgs(outFormat string) []string {
+	if outFormat == "mpegts" {
+		return []string{"-f", "mpegts", "pipe:1"}
+	}
+	return []string{
 		"-f", "mp4",
 		"-movflags", "frag_keyframe+empty_moov+default_base_moof",
 		"-reset_timestamps", "1",
 		"pipe:1",
 	}
-
-	// Pre-allocate slice dengan ukuran tepat untuk menghindari aliasing.
-	// append(base, ...) bisa modify backing array base kalau cap > len.
-	total := len(base) + len(codecArgs) + len(outputArgs)
-	args := make([]string, 0, total)
-	args = append(args, base...)
-	args = append(args, codecArgs...)
-	args = append(args, outputArgs...)
-	return args
 }
 
 // strategyName mengembalikan nama strategi untuk logging.

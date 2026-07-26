@@ -521,46 +521,20 @@ function openPlayer(item) {
   if (typeof setPlayerItem === 'function') setPlayerItem(item, filePathOf(item));
   if (typeof setQueue === 'function') setQueue(state.allItems, item);
 
-  // Untuk video transcode, set flag isTranscoded segera (synchronous) agar
-  // effectiveDuration() sudah tahu mode transcode sebelum loadedmetadata fire.
-  // Durasi total (totalDuration) diisi setelah probe balik — kalau probe lambat,
-  // effectiveDuration() fallback ke video.duration native sampai probe selesai.
-  //
-  // PENTING: setTotalDuration(0, true) hanya set flag isTranscoded, TIDAK reset
-  // transcodeOffset. Ini aman karena resetCplayer() sudah dipanggil di atas
-  // yang memastikan transcodeOffset = 0 saat buka video baru.
+  // Continuous /api/transcode (default). HLS only if localStorage.cp_use_hls=1.
   if (item.needs_transcode && item.streamable === 'video') {
-    if (typeof setTotalDuration === 'function') setTotalDuration(0, true); // set flag dulu, durasi menyusul
+    const useHls = localStorage.getItem('cp_use_hls') === '1';
+    if (cplayer.state) cplayer.state.isHLS = useHls;
+    if (typeof setTotalDuration === 'function') setTotalDuration(0, !useHls);
     fetch('/api/probe?path=' + encodeURIComponent(filePathOf(item)))
       .then(r => r.ok ? r.json() : null)
       .then(probe => {
         if (!probe || !probe.duration) return;
-        if (typeof setTotalDuration === 'function') {
-          // Pastikan ini masih untuk video yang sama (user belum ganti video)
-          if (cplayer.state && cplayer.state.currentPath === filePathOf(item)) {
-            // Cek apakah file ini akan di-serve native (CanDirectServe di backend).
-            // Kalau codec video+audio kompatibel browser, backend akan redirect ke
-            // /api/stream (native seek, ~0% CPU). Dalam kasus ini isTranscoded = false
-            // agar seek pakai native video.currentTime, bukan reload ffmpeg.
-            //
-            // Logika ini mirror CanDirectServe() di probe.go:
-            //   - video codec: h264/avc/vp8/vp9/av1 (atau tidak ada video)
-            //   - audio codec: aac/mp3/opus/vorbis/mp2 (atau tidak ada audio)
-            const compatVideoCodecs = ['h264', 'avc', 'vp8', 'vp9', 'av1'];
-            const compatAudioCodecs = ['aac', 'mp3', 'opus', 'vorbis', 'mp2'];
-            const videoStream = (probe.streams || []).find(s => s.type === 'video');
-            const audioStream = (probe.streams || []).find(s => s.type === 'audio');
-            const videoOK = !videoStream || compatVideoCodecs.includes((videoStream.codec || '').toLowerCase());
-            const audioOK = !audioStream || compatAudioCodecs.includes((audioStream.codec || '').toLowerCase());
-            const willDirectServe = videoOK && audioOK;
-
-            // isTranscoded = false kalau akan di-serve native (seek pakai video.currentTime)
-            // isTranscoded = true kalau butuh ffmpeg (seek pakai ?t= reload)
-            setTotalDuration(probe.duration, !willDirectServe);
-          }
+        if (cplayer.state && cplayer.state.currentPath === filePathOf(item) && typeof setTotalDuration === 'function') {
+          setTotalDuration(probe.duration, !useHls);
         }
       })
-      .catch(() => { /* probe gagal — effectiveDuration() fallback ke video.duration */ });
+      .catch(() => {});
   } else {
     if (typeof setTotalDuration === 'function') setTotalDuration(0, false);
   }
@@ -581,29 +555,42 @@ function openPlayer(item) {
 
     playerVideo.addEventListener('canplay', () => {
       playerSpinner.classList.add('hidden');
-      // Hapus pesan slow-transcode kalau ada
       const spinnerEl = $('player-spinner');
       if (spinnerEl) {
         const msg = spinnerEl.querySelector('.spinner-msg');
         if (msg) msg.remove();
       }
-      playerVideo.play().catch(() => {});
+      // HLS: play owned by attachHLSSource. Continuous/native: play here.
+      if (!(streamURL.startsWith('/api/hls') && typeof attachHLSSource === 'function')) {
+        playerVideo.play().catch(() => {});
+      }
     }, { once: true, signal: sig });
 
-    // Untuk HEVC/transcode, tampilkan pesan informatif di spinner setelah 5 detik
-    // agar user tahu ini normal, bukan hang.
+    // Spinner forever watchdog (45s)
+    const stallTimer = setTimeout(() => {
+      if (!playerSpinner || playerSpinner.classList.contains('hidden')) return;
+      if (playerError && !playerError.classList.contains('hidden')) return;
+      playerSpinner.classList.add('hidden');
+      if (playerErrorMsg) {
+        playerErrorMsg.textContent = 'Pemutaran terlalu lama / hang. Coba refresh, atau download ke VLC.';
+      }
+      if (playerError) playerError.classList.remove('hidden');
+    }, 45000);
+    playerAbort.signal.addEventListener('abort', () => clearTimeout(stallTimer));
+
     if (item.needs_transcode) {
       const slowTranscodeTimer = setTimeout(() => {
         const spinnerEl = $('player-spinner');
         if (spinnerEl && !spinnerEl.classList.contains('hidden') && !spinnerEl.querySelector('.spinner-msg')) {
           const msg = document.createElement('p');
           msg.className = 'spinner-msg';
-          msg.textContent = 'Memproses video... (HEVC/transcode bisa 10–30 detik)';
+          msg.textContent = streamURL.startsWith('/api/hls')
+            ? 'Menyiapkan potongan HLS... (bisa 10–60 detik)'
+            : 'Memproses video... (transcode bisa 10–30 detik)';
           msg.style.cssText = 'color:#fff;font-size:.8rem;margin-top:8px;text-align:center;opacity:.8;padding:0 16px';
           spinnerEl.appendChild(msg);
         }
       }, 5000);
-      // Bersihkan timer kalau player ditutup sebelum 5 detik
       playerAbort.signal.addEventListener('abort', () => clearTimeout(slowTranscodeTimer));
     }
 
@@ -611,7 +598,7 @@ function openPlayer(item) {
       playerSpinner.classList.add('hidden');
       const code = playerVideo.error?.code;
       const ext = (item.ext || '').toLowerCase();
-      const isTranscodeURL = streamURL.startsWith('/api/transcode');
+      const isTranscodeURL = streamURL.startsWith('/api/transcode') || streamURL.startsWith('/api/hls');
       let msg;
       if (isTranscodeURL) {
         msg = 'Format ini tidak bisa diputar di browser. Server kamu mungkin belum punya ffmpeg, atau file rusak.';
@@ -630,14 +617,22 @@ function openPlayer(item) {
       if (playerError) playerError.classList.remove('hidden');
     }, { once: true, signal: sig });
 
-    // Tampilkan toast informasi transcoding (sekali per session)
     if (item.needs_transcode && !sessionStorage.getItem('cp_transcodeHint')) {
       sessionStorage.setItem('cp_transcodeHint', '1');
       setTimeout(() => showToast('🎬 Konversi format on-the-fly... CPU laptop akan naik sebentar.'), 500);
     }
 
-    playerVideo.src = streamURL;
-    playerVideo.load();
+    if (streamURL.startsWith('/api/hls') && typeof attachHLSSource === 'function') {
+      const path = filePathOf(item);
+      let resumeAt = 0;
+      const hist = window.watchHistoryByPath?.[path];
+      if (hist && !hist.completed) resumeAt = hist.position_sec || 0;
+      if (!resumeAt) resumeAt = parseFloat(localStorage.getItem('cp_pos_' + path) || '0') || 0;
+      attachHLSSource(streamURL, { autoplay: true, resumeAt: resumeAt > 5 ? resumeAt : undefined });
+    } else {
+      playerVideo.src = streamURL;
+      playerVideo.load();
+    }
 
     // Setup subtitle DITUNDA sampai video benar-benar mulai play.
     //
@@ -691,11 +686,14 @@ function openPlayer(item) {
 
 // ===== Pemilihan URL Stream =====
 
-// pickStreamURL memilih endpoint stream yang tepat berdasarkan format file.
-// Format yang kemungkinan butuh transcode (mkv, avi, wmv, flv, ts) → /api/transcode
-// Format browser-native (mp4, webm, mp3, dll) → /api/stream
+// pickStreamURL: needs_transcode → continuous /api/transcode (default, reliable).
+// Opt-in HLS: localStorage.setItem('cp_use_hls','1') then reload.
+// Native mp4/webm → /api/stream.
 function pickStreamURL(item) {
   if (item.needs_transcode) {
+    if (localStorage.getItem('cp_use_hls') === '1') {
+      return '/api/hls/playlist?path=' + encodeURIComponent(filePathOf(item));
+    }
     return '/api/transcode?path=' + encodeURIComponent(filePathOf(item));
   }
   return '/api/stream?path=' + encodeURIComponent(filePathOf(item));

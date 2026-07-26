@@ -9,6 +9,7 @@ import (
 	"lan-server/internal/embed"
 	"lan-server/internal/files"
 	"lan-server/internal/history"
+	"lan-server/internal/hls"
 	"lan-server/internal/media"
 	"lan-server/internal/subtitle"
 	"lan-server/internal/transcode"
@@ -1007,6 +1008,136 @@ func HandleTranscodeStatus() http.HandlerFunc {
 			"max":       max,
 			"available": active < max,
 		})
+	}
+}
+
+// parseBurnSub membaca query burnSub (default -1).
+func parseBurnSub(r *http.Request) int {
+	bs := strings.TrimSpace(r.URL.Query().Get("burnSub"))
+	if bs == "" {
+		return -1
+	}
+	v, err := strconv.Atoi(bs)
+	if err != nil || v < 0 {
+		return -1
+	}
+	return v
+}
+
+// HandleHLSPlaylist GET /api/hls/playlist?path=&burnSub=
+// Media playlist VOD; tiap entri mengarah ke /api/hls/seg.
+func HandleHLSPlaylist(cfg *Config) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet && r.Method != http.MethodHead {
+			writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+			return
+		}
+		if !transcode.Available() {
+			writeJSON(w, http.StatusServiceUnavailable, map[string]string{
+				"error": "ffmpeg tidak terinstall di server",
+			})
+			return
+		}
+
+		relPath := r.URL.Query().Get("path")
+		target, ok := resolveSafeOrRespond(w, cfg.SharedFolder, relPath)
+		if !ok {
+			return
+		}
+		info, err := os.Stat(target)
+		if err != nil || info.IsDir() || info.Size() == 0 {
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": "file tidak ditemukan"})
+			return
+		}
+
+		probe, err := transcode.Probe(target, info.ModTime())
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "gagal probe: " + err.Error()})
+			return
+		}
+		if probe.Duration <= 0 {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "durasi video tidak diketahui"})
+			return
+		}
+
+		burnSub := parseBurnSub(r)
+		pl := hls.BuildMediaPlaylist(probe.Duration, func(i int) string {
+			q := url.Values{}
+			q.Set("path", relPath)
+			q.Set("i", strconv.Itoa(i))
+			if burnSub >= 0 {
+				q.Set("burnSub", strconv.Itoa(burnSub))
+			}
+			return "/api/hls/seg?" + q.Encode()
+		})
+
+		w.Header().Set("Content-Type", "application/vnd.apple.mpegurl")
+		w.Header().Set("Cache-Control", "no-cache")
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		if r.Method == http.MethodHead {
+			return
+		}
+		w.Write([]byte(pl))
+	}
+}
+
+// HandleHLSSegment GET /api/hls/seg?path=&i=&burnSub=
+func HandleHLSSegment(cfg *Config) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet && r.Method != http.MethodHead {
+			writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+			return
+		}
+		if !transcode.Available() {
+			writeJSON(w, http.StatusServiceUnavailable, map[string]string{
+				"error": "ffmpeg tidak terinstall di server",
+			})
+			return
+		}
+
+		relPath := r.URL.Query().Get("path")
+		target, ok := resolveSafeOrRespond(w, cfg.SharedFolder, relPath)
+		if !ok {
+			return
+		}
+		info, err := os.Stat(target)
+		if err != nil || info.IsDir() || info.Size() == 0 {
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": "file tidak ditemukan"})
+			return
+		}
+
+		idx, err := strconv.Atoi(strings.TrimSpace(r.URL.Query().Get("i")))
+		if err != nil || idx < 0 {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "parameter i tidak valid"})
+			return
+		}
+
+		probe, err := transcode.Probe(target, info.ModTime())
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "gagal probe: " + err.Error()})
+			return
+		}
+
+		burnSub := parseBurnSub(r)
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		// HEAD: never start encode — just advertise type
+		if r.Method == http.MethodHead {
+			w.Header().Set("Content-Type", "video/mp2t")
+			return
+		}
+
+		// Encode-to-disk then serve; on fail before body → real JSON error
+		if err := hls.WriteSegment(r.Context(), w, cfg.CacheDir(), target, probe, info.ModTime(), info.Size(), burnSub, idx); err != nil {
+			log.Printf("[hls] seg error path=%s i=%d: %v", relPath, idx, err)
+			if r.Context().Err() != nil {
+				return
+			}
+			// Headers not written yet if encode failed
+			writeJSON(w, http.StatusInternalServerError, map[string]string{
+				"error": "gagal encode segment: " + err.Error(),
+			})
+			return
+		}
 	}
 }
 

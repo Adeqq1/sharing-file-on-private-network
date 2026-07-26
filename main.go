@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"lan-server/internal/hls"
 	"lan-server/internal/netinfo"
 	"lan-server/internal/server"
 	"lan-server/internal/transcode"
@@ -108,14 +109,16 @@ func main() {
 		log.Printf("WARN: gagal membuat folder cache subtitle: %v", err)
 	}
 
-	// Jalankan janitor cache subtitle: hapus file > 7 hari, scan rekursif
+	// Janitor cache subtitle + HLS: hapus file > 7 hari
 	go func() {
 		const maxAge = 7 * 24 * time.Hour
 		cleanSubtitleCache(cacheDir, maxAge)
+		hls.CleanCache(cacheDir, maxAge)
 		ticker := time.NewTicker(24 * time.Hour)
 		defer ticker.Stop()
 		for range ticker.C {
 			cleanSubtitleCache(cacheDir, maxAge)
+			hls.CleanCache(cacheDir, maxAge)
 		}
 	}()
 

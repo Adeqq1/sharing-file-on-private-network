@@ -47,6 +47,8 @@ func New(cfg *Config) http.Handler {
 	mux.HandleFunc("/api/stream", HandleStream(cfg))
 	mux.HandleFunc("/api/transcode", HandleTranscode(cfg))
 	mux.HandleFunc("/api/transcode/status", HandleTranscodeStatus())
+	mux.HandleFunc("/api/hls/playlist", HandleHLSPlaylist(cfg))
+	mux.HandleFunc("/api/hls/seg", HandleHLSSegment(cfg))
 	mux.HandleFunc("/api/probe", HandleProbe(cfg))
 	mux.HandleFunc("/api/subtitle", HandleSubtitle(cfg))
 	mux.HandleFunc("/api/subtitles", HandleSubtitles(cfg))

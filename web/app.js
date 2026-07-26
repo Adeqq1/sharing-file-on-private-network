@@ -521,16 +521,17 @@ function openPlayer(item) {
   if (typeof setPlayerItem === 'function') setPlayerItem(item, filePathOf(item));
   if (typeof setQueue === 'function') setQueue(state.allItems, item);
 
-  // needs_transcode → HLS (timeline absolut). Probe isi totalDuration untuk progress bar.
+  // Continuous /api/transcode (default). HLS only if localStorage.cp_use_hls=1.
   if (item.needs_transcode && item.streamable === 'video') {
-    if (cplayer.state) cplayer.state.isHLS = true;
-    if (typeof setTotalDuration === 'function') setTotalDuration(0, false);
+    const useHls = localStorage.getItem('cp_use_hls') === '1';
+    if (cplayer.state) cplayer.state.isHLS = useHls;
+    if (typeof setTotalDuration === 'function') setTotalDuration(0, !useHls);
     fetch('/api/probe?path=' + encodeURIComponent(filePathOf(item)))
       .then(r => r.ok ? r.json() : null)
       .then(probe => {
         if (!probe || !probe.duration) return;
         if (cplayer.state && cplayer.state.currentPath === filePathOf(item) && typeof setTotalDuration === 'function') {
-          setTotalDuration(probe.duration, false);
+          setTotalDuration(probe.duration, !useHls);
         }
       })
       .catch(() => {});
@@ -559,25 +560,37 @@ function openPlayer(item) {
         const msg = spinnerEl.querySelector('.spinner-msg');
         if (msg) msg.remove();
       }
-      // HLS: play owned by attachHLSSource only — avoid double play() race
+      // HLS: play owned by attachHLSSource. Continuous/native: play here.
       if (!(streamURL.startsWith('/api/hls') && typeof attachHLSSource === 'function')) {
         playerVideo.play().catch(() => {});
       }
     }, { once: true, signal: sig });
 
-    // Untuk HEVC/transcode, tampilkan pesan informatif di spinner setelah 5 detik
-    // agar user tahu ini normal, bukan hang.
+    // Spinner forever watchdog (45s)
+    const stallTimer = setTimeout(() => {
+      if (!playerSpinner || playerSpinner.classList.contains('hidden')) return;
+      if (playerError && !playerError.classList.contains('hidden')) return;
+      playerSpinner.classList.add('hidden');
+      if (playerErrorMsg) {
+        playerErrorMsg.textContent = 'Pemutaran terlalu lama / hang. Coba refresh, atau download ke VLC.';
+      }
+      if (playerError) playerError.classList.remove('hidden');
+    }, 45000);
+    playerAbort.signal.addEventListener('abort', () => clearTimeout(stallTimer));
+
     if (item.needs_transcode) {
       const slowTranscodeTimer = setTimeout(() => {
         const spinnerEl = $('player-spinner');
         if (spinnerEl && !spinnerEl.classList.contains('hidden') && !spinnerEl.querySelector('.spinner-msg')) {
           const msg = document.createElement('p');
           msg.className = 'spinner-msg';
-          msg.textContent = 'Menyiapkan potongan video... (seek/resume pertama bisa 10–60 detik)';
+          msg.textContent = streamURL.startsWith('/api/hls')
+            ? 'Menyiapkan potongan HLS... (bisa 10–60 detik)'
+            : 'Memproses video... (transcode bisa 10–30 detik)';
           msg.style.cssText = 'color:#fff;font-size:.8rem;margin-top:8px;text-align:center;opacity:.8;padding:0 16px';
           spinnerEl.appendChild(msg);
         }
-      }, 3000);
+      }, 5000);
       playerAbort.signal.addEventListener('abort', () => clearTimeout(slowTranscodeTimer));
     }
 
@@ -585,9 +598,9 @@ function openPlayer(item) {
       playerSpinner.classList.add('hidden');
       const code = playerVideo.error?.code;
       const ext = (item.ext || '').toLowerCase();
-      const isChunked = streamURL.startsWith('/api/hls') || streamURL.startsWith('/api/transcode');
+      const isTranscodeURL = streamURL.startsWith('/api/transcode') || streamURL.startsWith('/api/hls');
       let msg;
-      if (isChunked) {
+      if (isTranscodeURL) {
         msg = 'Format ini tidak bisa diputar di browser. Server kamu mungkin belum punya ffmpeg, atau file rusak.';
       } else if (code === 4 && (ext === 'mkv' || ext === 'avi' || ext === 'wmv' || ext === 'flv')) {
         msg = `Format ${ext.toUpperCase()} tidak didukung browser ini. Coba Chrome Android atau download ke VLC/MX Player.`;
@@ -606,11 +619,10 @@ function openPlayer(item) {
 
     if (item.needs_transcode && !sessionStorage.getItem('cp_transcodeHint')) {
       sessionStorage.setItem('cp_transcodeHint', '1');
-      setTimeout(() => showToast('🎬 Streaming potongan HLS... segment pertama bisa 10–30 detik.'), 500);
+      setTimeout(() => showToast('🎬 Konversi format on-the-fly... CPU laptop akan naik sebentar.'), 500);
     }
 
     if (streamURL.startsWith('/api/hls') && typeof attachHLSSource === 'function') {
-      // resumeAt: startPosition di hls.js → minta segmen 1:33 dulu, bukan seg 0
       const path = filePathOf(item);
       let resumeAt = 0;
       const hist = window.watchHistoryByPath?.[path];
@@ -674,10 +686,15 @@ function openPlayer(item) {
 
 // ===== Pemilihan URL Stream =====
 
-// pickStreamURL: needs_transcode → HLS playlist; native → /api/stream
+// pickStreamURL: needs_transcode → continuous /api/transcode (default, reliable).
+// Opt-in HLS: localStorage.setItem('cp_use_hls','1') then reload.
+// Native mp4/webm → /api/stream.
 function pickStreamURL(item) {
   if (item.needs_transcode) {
-    return '/api/hls/playlist?path=' + encodeURIComponent(filePathOf(item));
+    if (localStorage.getItem('cp_use_hls') === '1') {
+      return '/api/hls/playlist?path=' + encodeURIComponent(filePathOf(item));
+    }
+    return '/api/transcode?path=' + encodeURIComponent(filePathOf(item));
   }
   return '/api/stream?path=' + encodeURIComponent(filePathOf(item));
 }

@@ -790,18 +790,27 @@ function switchSubtitleEntry(entry) {
 
   const path = cplayer.state.currentPath;
 
-  // Image-based (PGS/VobSub) → burn-in via HLS segments
+  // Image-based (PGS/VobSub) → burn-in via continuous /api/transcode
   if (entry.image && entry.track !== undefined) {
-    console.log('[sub] image-based → burn-in HLS, track:', entry.track);
+    console.log('[sub] image-based → burn-in transcode, track:', entry.track);
     showToastFromPlayer('🎨 Memuat ulang dengan subtitle ditanam ke video...');
     const curPos = effectiveCurrentTime();
+    const t = Math.max(0, Math.floor(curPos));
     cplayer.state.currentLang = entry.lang || '';
     cplayer.state.ccEnabled = true;
     cplayer.state.burnSubIndex = entry.track;
-    const params = new URLSearchParams({ path, burnSub: String(entry.track) });
-    const url = '/api/hls/playlist?' + params.toString();
+    cplayer.state.isHLS = false;
+    cplayer.state.isTranscoded = true;
+    cplayer.state.transcodeOffset = t;
+    destroyHLS();
+    const params = new URLSearchParams({ path, t: String(t), burnSub: String(entry.track) });
+    const url = '/api/transcode?' + params.toString();
     const wasPaused = cplayer.video.paused;
-    attachHLSSource(url, { resumeAt: curPos, autoplay: !wasPaused });
+    cplayer.video.src = url;
+    cplayer.video.load();
+    if (!wasPaused) {
+      cplayer.video.addEventListener('canplay', () => cplayer.video.play().catch(() => {}), { once: true });
+    }
     return;
   }
 
@@ -867,17 +876,26 @@ function switchSubtitleEntry(entry) {
 function toggleCC(forceState) {
   const newState = (forceState !== undefined) ? forceState : !cplayer.state.ccEnabled;
 
-  // Burn-in Off → reload HLS tanpa burnSub
+  // Burn-in Off → reload continuous without burnSub
   if (!newState && cplayer.state.burnSubIndex >= 0 && (cplayer.state.isHLS || cplayer.state.isTranscoded)) {
     const path = cplayer.state.currentPath;
     if (path) {
       showToastFromPlayer('🔄 Memuat ulang tanpa subtitle...');
-      const curPos = effectiveCurrentTime();
+      const t = Math.max(0, Math.floor(effectiveCurrentTime()));
       cplayer.state.burnSubIndex = -1;
       cplayer.state.ccEnabled = false;
-      const url = '/api/hls/playlist?path=' + encodeURIComponent(path);
+      cplayer.state.isHLS = false;
+      cplayer.state.isTranscoded = true;
+      cplayer.state.transcodeOffset = t;
+      destroyHLS();
+      const params = new URLSearchParams({ path, t: String(t) });
+      const url = '/api/transcode?' + params.toString();
       const wasPaused = cplayer.video.paused;
-      attachHLSSource(url, { resumeAt: curPos, autoplay: !wasPaused });
+      cplayer.video.src = url;
+      cplayer.video.load();
+      if (!wasPaused) {
+        cplayer.video.addEventListener('canplay', () => cplayer.video.play().catch(() => {}), { once: true });
+      }
       return;
     }
   }
@@ -1633,6 +1651,7 @@ function resetCplayer() {
   cplayer.state.isTranscoded    = false;
   cplayer.state.isHLS           = false;
   cplayer.state._hlsFallbackTried = false;
+  cplayer.state._hlsWatchdog    = null;
   cplayer.state.pendingSeek     = null;
   cplayer.state.burnSubIndex    = -1;
   clearTimeout(_seekDebounceTimer);
@@ -1698,6 +1717,8 @@ function setTotalDuration(durationSec, isTranscoded) {
 
 // destroyHLS: lepas hls.js agar tidak leak buffer antar video.
 function destroyHLS() {
+  clearTimeout(cplayer.state._hlsWatchdog);
+  cplayer.state._hlsWatchdog = null;
   if (cplayer.state.hls) {
     try {
       cplayer.state.hls.destroy();
@@ -1749,10 +1770,43 @@ function attachHLSSource(playlistURL, opts) {
 
   if (cplayer.dom.spinner) cplayer.dom.spinner.classList.remove('hidden');
 
+  // Watchdog: no media in 45s → continuous fallback (never spinner forever)
+  clearTimeout(cplayer.state._hlsWatchdog);
+  cplayer.state._hlsWatchdog = setTimeout(() => {
+    if (!cplayer.state.isHLS || !cplayer.video) return;
+    if (cplayer.video.readyState >= 2) return; // HAVE_CURRENT_DATA+
+    console.warn('[hls] watchdog: no canplay — fallback continuous');
+    fallbackContinuousTranscode(startAt, autoplay);
+  }, 45000);
+
+  function fallbackContinuousTranscode(at, doPlay) {
+    clearTimeout(cplayer.state._hlsWatchdog);
+    if (cplayer.state._hlsFallbackTried) return;
+    cplayer.state._hlsFallbackTried = true;
+    destroyHLS();
+    const path = cplayer.state.currentPath;
+    if (!path) return;
+    showToastFromPlayer('⚠ HLS gagal — fallback stream kontinu…');
+    cplayer.state.isHLS = false;
+    cplayer.state.isTranscoded = true;
+    let url = '/api/transcode?path=' + encodeURIComponent(path);
+    if (cplayer.state.burnSubIndex >= 0) url += '&burnSub=' + cplayer.state.burnSubIndex;
+    const t = (typeof at === 'number' && at > 0) ? Math.floor(at) : 0;
+    if (t > 0) {
+      url += '&t=' + t;
+      cplayer.state.transcodeOffset = t;
+    }
+    v.src = url;
+    v.load();
+    if (doPlay) v.addEventListener('canplay', () => {
+      if (cplayer.dom.spinner) cplayer.dom.spinner.classList.add('hidden');
+      v.play().catch(() => {});
+    }, { once: true });
+  }
+
   if (window.Hls && Hls.isSupported()) {
     const hlsOpts = {
       enableWorker: true,
-      // ≤2 segs ahead ≈ maxConcurrentTranscodes (2) — avoid encode pileup
       maxBufferLength: 8,
       maxMaxBufferLength: 16,
       maxBufferSize: 12 * 1000 * 1000,
@@ -1771,7 +1825,19 @@ function attachHLSSource(playlistURL, opts) {
     cplayer.state.hls = hls;
     hls.loadSource(playlistURL);
     hls.attachMedia(v);
-    hls.on(Hls.Events.MANIFEST_PARSED, () => onReady());
+    // Play after first frag buffered — not only MANIFEST_PARSED
+    let played = false;
+    const tryPlay = () => {
+      if (played) return;
+      played = true;
+      clearTimeout(cplayer.state._hlsWatchdog);
+      onReady();
+    };
+    hls.on(Hls.Events.MANIFEST_PARSED, () => {
+      // light start; real play after FRAG_BUFFERED if media still empty
+      if (v.readyState >= 2) tryPlay();
+    });
+    hls.on(Hls.Events.FRAG_BUFFERED, () => tryPlay());
     hls.on(Hls.Events.ERROR, (_, data) => {
       if (!data.fatal) return;
       console.error('[hls] fatal', data.type, data.details);
@@ -1783,32 +1849,7 @@ function attachHLSSource(playlistURL, opts) {
         hls.recoverMediaError();
         return;
       }
-      // Other fatal: one-shot continuous /api/transcode fallback
-      destroyHLS();
-      const path = cplayer.state.currentPath;
-      if (path && !cplayer.state._hlsFallbackTried) {
-        cplayer.state._hlsFallbackTried = true;
-        showToastFromPlayer('⚠ HLS gagal — fallback stream kontinu…');
-        cplayer.state.isHLS = false;
-        cplayer.state.isTranscoded = true;
-        let url = '/api/transcode?path=' + encodeURIComponent(path);
-        if (cplayer.state.burnSubIndex >= 0) url += '&burnSub=' + cplayer.state.burnSubIndex;
-        const t = startAt > 0 ? Math.floor(startAt) : Math.floor(effectiveCurrentTime() || 0);
-        if (t > 0) {
-          url += '&t=' + t;
-          cplayer.state.transcodeOffset = t;
-        }
-        v.src = url;
-        v.load();
-        if (autoplay) v.addEventListener('canplay', () => v.play().catch(() => {}), { once: true });
-        return;
-      }
-      const errEl = document.getElementById('player-error');
-      const errMsg = document.getElementById('player-error-msg');
-      if (errMsg) errMsg.textContent = 'Gagal memutar stream HLS. Coba download atau buka di VLC.';
-      if (errEl) errEl.classList.remove('hidden');
-      if (cplayer.dom.spinner) cplayer.dom.spinner.classList.add('hidden');
-      showToastFromPlayer('⚠ Gagal memutar stream HLS');
+      fallbackContinuousTranscode(startAt, autoplay);
     });
     return;
   }

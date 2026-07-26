@@ -554,13 +554,15 @@ function openPlayer(item) {
 
     playerVideo.addEventListener('canplay', () => {
       playerSpinner.classList.add('hidden');
-      // Hapus pesan slow-transcode kalau ada
       const spinnerEl = $('player-spinner');
       if (spinnerEl) {
         const msg = spinnerEl.querySelector('.spinner-msg');
         if (msg) msg.remove();
       }
-      playerVideo.play().catch(() => {});
+      // HLS: play owned by attachHLSSource only — avoid double play() race
+      if (!(streamURL.startsWith('/api/hls') && typeof attachHLSSource === 'function')) {
+        playerVideo.play().catch(() => {});
+      }
     }, { once: true, signal: sig });
 
     // Untuk HEVC/transcode, tampilkan pesan informatif di spinner setelah 5 detik

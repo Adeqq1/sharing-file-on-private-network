@@ -26,7 +26,7 @@ func CacheDir(root string) string {
 }
 
 // cacheGen bumps when segment encode recipe changes (invalidates old bad segs).
-const cacheGen = "v2-force-encode"
+const cacheGen = "v3-smart-codec"
 
 // CacheKey is stable for path+mtime+size+burnSub+gen so recipe changes invalidate cache.
 func CacheKey(absPath string, modTime time.Time, size int64, burnSub int) string {
@@ -87,6 +87,9 @@ func BuildMediaPlaylist(durationSec float64, segURL func(i int) string) string {
 }
 
 // segment locks: one encode per cache file at a time.
+// Bound growth: drop entries when map is huge (locks for finished segs are unused).
+const maxSegLocks = 512
+
 var (
 	segMu    sync.Mutex
 	segLocks = map[string]*sync.Mutex{}
@@ -94,6 +97,15 @@ var (
 
 func lockPath(p string) func() {
 	segMu.Lock()
+	if len(segLocks) > maxSegLocks {
+		// Clear unlocked entries only — simple bound, rare
+		for k, m := range segLocks {
+			if m.TryLock() {
+				m.Unlock()
+				delete(segLocks, k)
+			}
+		}
+	}
 	m, ok := segLocks[p]
 	if !ok {
 		m = &sync.Mutex{}
@@ -109,7 +121,9 @@ func SegmentPath(cacheRoot, key string, i int) string {
 	return filepath.Join(CacheDir(cacheRoot), key, fmt.Sprintf("seg_%05d.ts", i))
 }
 
-// WriteSegment serves segment i: cache hit = file; miss = stream ffmpeg to client while caching.
+// WriteSegment serves segment i: cache hit = file; miss = encode fully to disk then serve.
+// Never MultiWrites incomplete ffmpeg stdout to the client.
+// Returns err before any body write when encode fails (caller can writeJSON 500).
 func WriteSegment(ctx context.Context, w http.ResponseWriter, cacheRoot, absPath string, probe *transcode.ProbeResult, modTime time.Time, size int64, burnSub, index int) error {
 	if probe == nil || probe.Duration <= 0 {
 		return fmt.Errorf("durasi video tidak diketahui")
@@ -130,7 +144,7 @@ func WriteSegment(ctx context.Context, w http.ResponseWriter, cacheRoot, absPath
 	unlock := lockPath(outPath)
 	defer unlock()
 
-	// Re-check after lock (another request may have finished encode)
+	// Re-check after lock
 	if st, err := os.Stat(outPath); err == nil && st.Size() > 0 {
 		return serveFile(w, outPath, st)
 	}
@@ -149,19 +163,9 @@ func WriteSegment(ctx context.Context, w http.ResponseWriter, cacheRoot, absPath
 		return err
 	}
 
-	w.Header().Set("Content-Type", "video/mp2t")
-	w.Header().Set("Cache-Control", "private, max-age=86400")
-	// Headers must be written before body; first Write flushes status.
-
-	// Tee: client gets bytes ASAP; disk gets full segment for next hit.
-	var dest io.Writer = io.MultiWriter(w, f)
-	if fl, ok := w.(http.Flusher); ok {
-		dest = &flushWriter{w: dest, fl: fl}
-	}
-
-	encErr := transcode.StreamSegment(ctx, absPath, probe, start, dur, burnSub, dest)
+	// Encode ONLY to disk — no partial stream to client
+	encErr := transcode.StreamSegment(ctx, absPath, probe, start, dur, burnSub, f)
 	closeErr := f.Close()
-
 	if encErr != nil {
 		os.Remove(tmp)
 		if ctx.Err() != nil {
@@ -173,7 +177,8 @@ func WriteSegment(ctx context.Context, w http.ResponseWriter, cacheRoot, absPath
 		os.Remove(tmp)
 		return closeErr
 	}
-	if st, err := os.Stat(tmp); err != nil || st.Size() == 0 {
+	st, err := os.Stat(tmp)
+	if err != nil || st.Size() == 0 {
 		os.Remove(tmp)
 		return fmt.Errorf("segment kosong")
 	}
@@ -181,8 +186,14 @@ func WriteSegment(ctx context.Context, w http.ResponseWriter, cacheRoot, absPath
 		os.Remove(tmp)
 		return err
 	}
-	log.Printf("[hls] cached seg %d (stream-through): %s", index, filepath.Base(outPath))
-	return nil
+	log.Printf("[hls] cached seg %d: %s (%d bytes)", index, filepath.Base(outPath), st.Size())
+
+	// Fresh stat after rename
+	st, err = os.Stat(outPath)
+	if err != nil {
+		return err
+	}
+	return serveFile(w, outPath, st)
 }
 
 func serveFile(w http.ResponseWriter, path string, st os.FileInfo) error {
@@ -196,20 +207,6 @@ func serveFile(w http.ResponseWriter, path string, st os.FileInfo) error {
 	w.Header().Set("Content-Length", strconv.FormatInt(st.Size(), 10))
 	_, err = io.Copy(w, f)
 	return err
-}
-
-// flushWriter flushes HTTP after each write so first ffmpeg bytes reach client early.
-type flushWriter struct {
-	w  io.Writer
-	fl http.Flusher
-}
-
-func (f *flushWriter) Write(p []byte) (int, error) {
-	n, err := f.w.Write(p)
-	if n > 0 {
-		f.fl.Flush()
-	}
-	return n, err
 }
 
 // CleanCache removes HLS cache files older than maxAge under cacheRoot/hls.

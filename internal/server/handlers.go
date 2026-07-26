@@ -1120,14 +1120,22 @@ func HandleHLSSegment(cfg *Config) http.HandlerFunc {
 
 		burnSub := parseBurnSub(r)
 		w.Header().Set("Access-Control-Allow-Origin", "*")
+		// HEAD: never start encode — just advertise type
 		if r.Method == http.MethodHead {
 			w.Header().Set("Content-Type", "video/mp2t")
 			return
 		}
 
-		// WriteSegment set Content-Type + stream-through / cache
+		// Encode-to-disk then serve; on fail before body → real JSON error
 		if err := hls.WriteSegment(r.Context(), w, cfg.CacheDir(), target, probe, info.ModTime(), info.Size(), burnSub, idx); err != nil {
 			log.Printf("[hls] seg error path=%s i=%d: %v", relPath, idx, err)
+			if r.Context().Err() != nil {
+				return
+			}
+			// Headers not written yet if encode failed
+			writeJSON(w, http.StatusInternalServerError, map[string]string{
+				"error": "gagal encode segment: " + err.Error(),
+			})
 			return
 		}
 	}

@@ -32,6 +32,7 @@ const cplayer = {
     isTranscoded: false,     // true kalau continuous /api/transcode (?t= seek)
     isHLS: false,            // true kalau /api/hls — timeline absolut, seek native
     hls: null,               // instance hls.js aktif
+    _hlsFallbackTried: false, // one-shot continuous fallback after fatal HLS
     pendingSeek: null,       // detik tujuan saat seek sedang dalam proses (untuk debounce)
     // ── Burn-in subtitle (PGS) ──
     burnSubIndex: -1,        // stream index PGS yang sedang di-burn-in (-1 = tidak ada)
@@ -1631,6 +1632,7 @@ function resetCplayer() {
   cplayer.state.totalDuration   = 0;
   cplayer.state.isTranscoded    = false;
   cplayer.state.isHLS           = false;
+  cplayer.state._hlsFallbackTried = false;
   cplayer.state.pendingSeek     = null;
   cplayer.state.burnSubIndex    = -1;
   clearTimeout(_seekDebounceTimer);
@@ -1750,19 +1752,18 @@ function attachHLSSource(playlistURL, opts) {
   if (window.Hls && Hls.isSupported()) {
     const hlsOpts = {
       enableWorker: true,
-      // Buffer kecil: seek jauh = 1 encode, bukan 8 segmen concurrent
-      maxBufferLength: 12,
-      maxMaxBufferLength: 24,
-      maxBufferSize: 20 * 1000 * 1000,
+      // ≤2 segs ahead ≈ maxConcurrentTranscodes (2) — avoid encode pileup
+      maxBufferLength: 8,
+      maxMaxBufferLength: 16,
+      maxBufferSize: 12 * 1000 * 1000,
+      maxBufferHole: 0.5,
       startLevel: -1,
-      // Encode on-demand bisa 30–90s (HEVC software) — jangan abort 20s
       fragLoadTimeout: 120000,
       manifestLoadingTimeOut: 30000,
       levelLoadingTimeOut: 30000,
       fragLoadingMaxRetry: 4,
       fragLoadingRetryDelay: 1000,
     };
-    // startPosition: load fragment di t=resume dulu (hindari encode seg 0 sia-sia)
     if (startAt > 0) {
       hlsOpts.startPosition = startAt;
     }
@@ -1776,12 +1777,38 @@ function attachHLSSource(playlistURL, opts) {
       console.error('[hls] fatal', data.type, data.details);
       if (data.type === Hls.ErrorTypes.NETWORK_ERROR) {
         hls.startLoad();
-      } else if (data.type === Hls.ErrorTypes.MEDIA_ERROR) {
-        hls.recoverMediaError();
-      } else {
-        destroyHLS();
-        showToastFromPlayer('⚠ Gagal memutar stream HLS');
+        return;
       }
+      if (data.type === Hls.ErrorTypes.MEDIA_ERROR) {
+        hls.recoverMediaError();
+        return;
+      }
+      // Other fatal: one-shot continuous /api/transcode fallback
+      destroyHLS();
+      const path = cplayer.state.currentPath;
+      if (path && !cplayer.state._hlsFallbackTried) {
+        cplayer.state._hlsFallbackTried = true;
+        showToastFromPlayer('⚠ HLS gagal — fallback stream kontinu…');
+        cplayer.state.isHLS = false;
+        cplayer.state.isTranscoded = true;
+        let url = '/api/transcode?path=' + encodeURIComponent(path);
+        if (cplayer.state.burnSubIndex >= 0) url += '&burnSub=' + cplayer.state.burnSubIndex;
+        const t = startAt > 0 ? Math.floor(startAt) : Math.floor(effectiveCurrentTime() || 0);
+        if (t > 0) {
+          url += '&t=' + t;
+          cplayer.state.transcodeOffset = t;
+        }
+        v.src = url;
+        v.load();
+        if (autoplay) v.addEventListener('canplay', () => v.play().catch(() => {}), { once: true });
+        return;
+      }
+      const errEl = document.getElementById('player-error');
+      const errMsg = document.getElementById('player-error-msg');
+      if (errMsg) errMsg.textContent = 'Gagal memutar stream HLS. Coba download atau buka di VLC.';
+      if (errEl) errEl.classList.remove('hidden');
+      if (cplayer.dom.spinner) cplayer.dom.spinner.classList.add('hidden');
+      showToastFromPlayer('⚠ Gagal memutar stream HLS');
     });
     return;
   }

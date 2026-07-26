@@ -272,11 +272,10 @@ func runFFmpeg(ctx context.Context, absPath string, probe *ProbeResult, startSec
 	if burnSubIndex >= 0 {
 		strategy = "full transcode (burn-in)"
 	} else if outFormat == "mpegts" {
-		// HLS: remux/copy tidak hit semaphore; encode full/audio-only hit.
 		strategy = hlsStrategyName(probe)
 	}
 
-	// Hanya pure remux (-c copy) yang skip semaphore.
+	// Pure remux (-c copy both) skips semaphore; audio-only / full encode hit it.
 	if strategy != "remux" {
 		if !acquireTranscode(ctx) {
 			return ctx.Err()
@@ -317,9 +316,22 @@ func runFFmpeg(ctx context.Context, absPath string, probe *ProbeResult, startSec
 	return nil
 }
 
-// hlsStrategyName: HLS potongan selalu re-encode (timeline akurat).
+// hlsStrategyName mirrors continuous path for logging/semaphore:
+// remux | audio transcode | full transcode (hls).
 func hlsStrategyName(probe *ProbeResult) string {
-	return "full transcode (hls)"
+	if probe == nil {
+		return "full transcode (hls)"
+	}
+	videoOK := VideoCodecCompatible(probe.VideoCodec())
+	audioOK := AudioCodecCompatible(probe.AudioCodec())
+	switch {
+	case videoOK && audioOK:
+		return "remux"
+	case videoOK:
+		return "audio transcode"
+	default:
+		return "full transcode (hls)"
+	}
 }
 
 // buildFFmpegArgs memilih argumen ffmpeg berdasarkan codec di probe.
@@ -327,8 +339,11 @@ func hlsStrategyName(probe *ProbeResult) string {
 // outFormat: "mp4" (fMP4 continuous) atau "mpegts" (segmen HLS mandiri).
 // burnSubIndex >= 0 mengaktifkan burn-in subtitle image-based.
 //
-// HLS (mpegts): SELALU re-encode (ultrafast). -c copy mengabaikan -t di keyframe
-// non-boundary → durasi segmen 9s+ padahal playlist bilang 4s → seek/resume hang.
+// HLS smart codec (same as continuous):
+//   - H.264 + AAC/MP3 → remux -c copy (fast; keyframe-aligned -t OK enough for VOD)
+//   - H.264 + AC3/DTS → -c:v copy -c:a aac (this file: train tu busan)
+//   - HEVC/other → ultrafast re-encode
+// Absolute PTS via -output_ts_offset so hls.js timeline is continuous.
 func buildFFmpegArgs(absPath string, probe *ProbeResult, startSec, durationSec float64, burnSubIndex int, outFormat string) []string {
 	if outFormat == "" {
 		outFormat = "mp4"
@@ -337,7 +352,9 @@ func buildFFmpegArgs(absPath string, probe *ProbeResult, startSec, durationSec f
 
 	videoOK := probe != nil && VideoCodecCompatible(probe.VideoCodec())
 	audioOK := probe != nil && AudioCodecCompatible(probe.AudioCodec())
-	needsHWAccel := hwAccel != "" && (isHLS || !videoOK || burnSubIndex >= 0)
+	// HW only when we actually encode video
+	needsVideoEncode := burnSubIndex >= 0 || !videoOK
+	needsHWAccel := hwAccel != "" && needsVideoEncode
 
 	if burnSubIndex >= 0 {
 		si := subStreamIndex(probe, burnSubIndex)
@@ -364,6 +381,7 @@ func buildFFmpegArgs(absPath string, probe *ProbeResult, startSec, durationSec f
 			burnArgs = append(burnArgs, buildVideoEncoder()...)
 		}
 		burnArgs = append(burnArgs, "-c:a", "aac", "-b:a", "192k", "-ac", "2")
+		burnArgs = append(burnArgs, hlsTSOffsetArgs(isHLS, startSec)...)
 		burnArgs = append(burnArgs, outputFormatArgs(outFormat)...)
 		return burnArgs
 	}
@@ -383,29 +401,45 @@ func buildFFmpegArgs(absPath string, probe *ProbeResult, startSec, durationSec f
 
 	var codecArgs []string
 	switch {
-	case isHLS:
-		// Accurate segment length + AAC for AC3/DTS sources (e.g. Train to Busan)
-		codecArgs = buildHLSVideoEncoder()
-		codecArgs = append(codecArgs, "-c:a", "aac", "-b:a", "192k", "-ac", "2")
 	case videoOK && audioOK:
+		// Remux both — HLS copy is OK; EXTINF may be slightly off near GOP, still playable
 		codecArgs = []string{"-c", "copy"}
 	case videoOK && !audioOK:
+		// H.264 + AC3/DTS: copy video, encode AAC only (critical for Train to Busan)
 		codecArgs = []string{"-c:v", "copy", "-c:a", "aac", "-b:a", "192k", "-ac", "2"}
 	default:
-		codecArgs = buildVideoEncoder()
+		if isHLS {
+			codecArgs = buildHLSVideoEncoder()
+		} else {
+			codecArgs = buildVideoEncoder()
+		}
 		codecArgs = append(codecArgs, "-c:a", "aac", "-b:a", "192k", "-ac", "2")
 	}
 
-	total := len(base) + len(codecArgs) + 8
+	total := len(base) + len(codecArgs) + 12
 	args := make([]string, 0, total)
 	args = append(args, base...)
 	args = append(args, codecArgs...)
+	args = append(args, hlsTSOffsetArgs(isHLS, startSec)...)
 	args = append(args, outputFormatArgs(outFormat)...)
 	return args
 }
 
-// buildHLSVideoEncoder: preset super-cepat untuk potongan HLS on-demand.
-// Kualitas lebih rendah dari continuous stream — prioritas first-byte / seek.
+// hlsTSOffsetArgs: absolute PTS so seg i starts near startSec (not ~1.4 every time).
+// muxdelay 0 avoids extra offset. Used only for mpegts HLS segments.
+func hlsTSOffsetArgs(isHLS bool, startSec float64) []string {
+	if !isHLS {
+		return nil
+	}
+	// Always set offset (0 for first seg) so all segs share one timeline origin.
+	return []string{
+		"-output_ts_offset", strconv.FormatFloat(startSec, 'f', 3, 64),
+		"-muxdelay", "0",
+		"-muxpreload", "0",
+	}
+}
+
+// buildHLSVideoEncoder: preset super-cepat untuk potongan HLS full-encode (HEVC dll).
 func buildHLSVideoEncoder() []string {
 	switch hwAccel {
 	case "nvenc":
@@ -417,14 +451,15 @@ func buildHLSVideoEncoder() []string {
 			"-b:v", "3M",
 			"-maxrate", "5M",
 			"-g", "48",
+			"-force_key_frames", "expr:eq(n,0)",
 			"-pix_fmt", "yuv420p",
 		}
 	case "qsv":
-		return []string{"-c:v", "h264_qsv", "-preset", "veryfast", "-global_quality", "28", "-g", "48", "-pix_fmt", "yuv420p"}
+		return []string{"-c:v", "h264_qsv", "-preset", "veryfast", "-global_quality", "28", "-g", "48", "-force_key_frames", "expr:eq(n,0)", "-pix_fmt", "yuv420p"}
 	case "amf":
-		return []string{"-c:v", "h264_amf", "-quality", "speed", "-rc", "cqp", "-qp_i", "28", "-qp_p", "30", "-g", "48", "-pix_fmt", "yuv420p"}
+		return []string{"-c:v", "h264_amf", "-quality", "speed", "-rc", "cqp", "-qp_i", "28", "-qp_p", "30", "-g", "48", "-force_key_frames", "expr:eq(n,0)", "-pix_fmt", "yuv420p"}
 	case "videotoolbox":
-		return []string{"-c:v", "h264_videotoolbox", "-b:v", "3M", "-g", "48", "-pix_fmt", "yuv420p"}
+		return []string{"-c:v", "h264_videotoolbox", "-b:v", "3M", "-g", "48", "-force_key_frames", "expr:eq(n,0)", "-pix_fmt", "yuv420p"}
 	default:
 		return []string{
 			"-c:v", "libx264",
@@ -432,6 +467,7 @@ func buildHLSVideoEncoder() []string {
 			"-tune", "zerolatency",
 			"-crf", "28",
 			"-g", "48",
+			"-force_key_frames", "expr:eq(n,0)",
 			"-pix_fmt", "yuv420p",
 		}
 	}
@@ -439,6 +475,7 @@ func buildHLSVideoEncoder() []string {
 
 func outputFormatArgs(outFormat string) []string {
 	if outFormat == "mpegts" {
+		// Do NOT reset_timestamps for HLS — absolute PTS via -output_ts_offset
 		return []string{"-f", "mpegts", "pipe:1"}
 	}
 	return []string{

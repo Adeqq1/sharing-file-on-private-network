@@ -479,6 +479,41 @@ const playerPip     = $('player-pip');
 
 let playerAbort = new AbortController();
 
+// Pin overlay to visualViewport so mobile browser chrome doesn't clip video.
+function fitPlayerOverlay() {
+  if (!playerOverlay || playerOverlay.classList.contains('hidden')) return;
+  const vv = window.visualViewport;
+  if (!vv) return;
+  playerOverlay.style.top = vv.offsetTop + 'px';
+  playerOverlay.style.left = vv.offsetLeft + 'px';
+  playerOverlay.style.width = vv.width + 'px';
+  playerOverlay.style.height = vv.height + 'px';
+  playerOverlay.style.right = 'auto';
+  playerOverlay.style.bottom = 'auto';
+}
+
+function clearPlayerOverlayFit() {
+  if (!playerOverlay) return;
+  playerOverlay.style.top = '';
+  playerOverlay.style.left = '';
+  playerOverlay.style.width = '';
+  playerOverlay.style.height = '';
+  playerOverlay.style.right = '';
+  playerOverlay.style.bottom = '';
+}
+
+(function bindPlayerOverlayViewport() {
+  const refit = () => {
+    if (document.body.classList.contains('player-open')) fitPlayerOverlay();
+  };
+  if (window.visualViewport) {
+    window.visualViewport.addEventListener('resize', refit);
+    window.visualViewport.addEventListener('scroll', refit);
+  }
+  window.addEventListener('orientationchange', () => setTimeout(refit, 150));
+  window.addEventListener('resize', refit);
+})();
+
 // Buka player untuk format yang browser support (MP4, WebM, MP3, dll)
 // atau format yang butuh transcode via /api/transcode (MKV, AVI, WMV, FLV, dll)
 function openPlayer(item) {
@@ -516,7 +551,9 @@ function openPlayer(item) {
 
   playerTitle.textContent = item.name;
   playerOverlay.classList.remove('hidden');
+  document.body.classList.add('player-open');
   document.body.style.overflow = 'hidden';
+  if (typeof fitPlayerOverlay === 'function') fitPlayerOverlay();
 
   if (typeof setPlayerItem === 'function') setPlayerItem(item, filePathOf(item));
   if (typeof setQueue === 'function') setQueue(state.allItems, item);
@@ -718,7 +755,9 @@ function closePlayer() {
   playerAudio.src = '';
   if (typeof resetCplayer === 'function') resetCplayer();
   playerOverlay.classList.add('hidden');
+  document.body.classList.remove('player-open');
   document.body.style.overflow = '';
+  if (typeof clearPlayerOverlayFit === 'function') clearPlayerOverlayFit();
   state.currentPlayerItem = null;
 
   // Refresh history cache dan re-render file list agar progress bar up-to-date

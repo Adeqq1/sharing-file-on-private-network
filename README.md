@@ -220,7 +220,9 @@ HP/Browser ─── HTTP ───► main.go ──► server.New() ──► 
 | `shared_folder` | string | — | **Wajib.** Path absolut folder yang dibagikan. Auto-create kalau belum ada. |
 | `port` | int | `8080` | Port HTTP server. |
 | `pin_enabled` | bool | `false` | `true` → aktifkan login PIN 4 digit (acak per startup). |
-| `ffmpeg_path` | string | `""` | Path manual ke `ffmpeg.exe`. Kosong = auto-detect dari PATH + lokasi standar (winget/choco/scoop). `ffprobe` dicari di folder yang sama. |
+| `ffmpeg_path` | string | `""` | Path manual ke `ffmpeg.exe`. Kosong = auto-detect dari PATH + lokasi standar (winget/choco/scoop). `ffprobe` harus tersedia di folder yang sama. |
+| `upload_max_bytes` | int | `5368709120` | Batas ukuran setiap file upload dalam byte (default 5 GiB). |
+| `upload_max_files` | int | `32` | Batas jumlah file dalam satu request upload. |
 
 Contoh dengan PIN aktif:
 

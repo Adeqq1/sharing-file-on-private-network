@@ -43,6 +43,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("ERROR: %v\nPastikan config.json ada di folder yang sama dengan main.go\n", err)
 	}
+	cfg.ConfigureMedia()
 
 	// Pastikan shared_folder ada
 	if _, err := os.Stat(cfg.SharedFolder); os.IsNotExist(err) {

@@ -6,6 +6,7 @@ import (
 	"log"
 	"mime"
 	"net/http"
+	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -32,11 +33,16 @@ func init() {
 func New(cfg *Config) http.Handler {
 	mux := http.NewServeMux()
 
-	// History store — load dari disk, fallback ke store kosong kalau gagal
-	historyStore, err := history.Open(cfg.CacheDir())
+	// History store — persist when possible, otherwise keep a usable memory store.
+	cacheDir := cfg.CacheDir()
+	migrateHistory(filepath.Join(cfg.SharedFolder, ".cache", "watch_history.json"), filepath.Join(cacheDir, "watch_history.json"))
+	historyStore, err := history.Open(cacheDir)
 	if err != nil {
-		log.Printf("WARN: gagal load history store: %v — mulai dengan store kosong", err)
-		historyStore, _ = history.Open(cfg.CacheDir())
+		log.Printf("WARN: gagal load history store: %v", err)
+		if historyStore == nil {
+			log.Print("WARN: history tidak akan dipersist")
+			historyStore = history.NewMemory()
+		}
 	}
 
 	// API routes
@@ -61,10 +67,26 @@ func New(cfg *Config) http.Handler {
 
 	// Static files (web/)
 	staticFS := http.FileServer(http.Dir("web"))
+	mux.HandleFunc("/login", func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "/", http.StatusFound)
+	})
 	mux.Handle("/", cacheStatic(staticFS))
 
 	// Wrap: logger → auth middleware
 	return requestLogger(AuthMiddleware(cfg.PINEnabled, mux))
+}
+
+func migrateHistory(legacy, destination string) {
+	if _, err := os.Stat(destination); err == nil {
+		return
+	}
+	data, err := os.ReadFile(legacy)
+	if err != nil {
+		return
+	}
+	if os.MkdirAll(filepath.Dir(destination), 0755) == nil {
+		_ = os.WriteFile(destination, data, 0644)
+	}
 }
 
 // NewServer membuat *http.Server yang siap untuk graceful shutdown.

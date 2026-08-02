@@ -166,6 +166,7 @@ body {
 }
 .icon-btn:hover { background: var(--border); color: var(--text); }
 .icon-btn.active { color: var(--primary); }
+button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible, [tabindex="0"]:focus-visible { outline: 3px solid var(--primary); outline-offset: 2px; }
 
 /* ===== Header ===== */
 .header {
@@ -334,6 +335,7 @@ body {
   user-select: none;
 }
 .file-item:hover { background: var(--primary-soft); background: color-mix(in srgb, var(--primary) 6%, var(--surface-solid)); }
+.file-item:focus-visible { background: var(--primary-soft); }
 .file-item:active { background: var(--primary-soft); background: color-mix(in srgb, var(--primary) 12%, var(--surface-solid)); }
 .file-icon { font-size: 1.4rem; flex-shrink: 0; width: 28px; text-align: center; }
 .file-info { flex: 1; min-width: 0; }
@@ -979,8 +981,12 @@ body.cp-rotated-active {
   -webkit-tap-highlight-color: transparent;
 }
 .file-menu-btn:hover { background: var(--border); color: var(--text); }
-/* Dalam grid mode, sembunyikan tombol menu (tidak ada ruang) */
-.file-list.grid-mode .file-menu-btn { display: none; }
+.file-list.grid-mode .file-menu-btn { position: absolute; top: 6px; right: 6px; }
+.file-list.grid-mode .file-item { position: relative; }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; scroll-behavior: auto !important; }
+}
 
 /* ===== Action Sheet ===== */
 .action-sheet {

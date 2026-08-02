@@ -70,12 +70,12 @@
 
         <div class="file-section-header">
           <div class="view-toggle" role="group" aria-label="Tampilan file">
-            <button id="view-list" class="icon-btn active" aria-label="Tampilan list" title="List">
+            <button id="view-list" class="icon-btn active" aria-label="Tampilan list" title="List" aria-pressed="true">
               <svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor">
                 <path d="M3 13h2v-2H3v2zm0 4h2v-2H3v2zm0-8h2V7H3v2zm4 4h14v-2H7v2zm0 4h14v-2H7v2zM7 7v2h14V7H7z"/>
               </svg>
             </button>
-            <button id="view-grid" class="icon-btn" aria-label="Tampilan grid" title="Grid">
+            <button id="view-grid" class="icon-btn" aria-label="Tampilan grid" title="Grid" aria-pressed="false">
               <svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor">
                 <path d="M3 11h8V3H3v8zm0 10h8v-8H3v8zm10 0h8v-8h-8v8zm0-18v8h8V3h-8z"/>
               </svg>
@@ -206,7 +206,7 @@
     </div>
 
     <!-- Player Modal (streaming video/audio) -->
-    <div id="player-overlay" class="player-overlay hidden" role="dialog" aria-modal="true" aria-label="Media player">
+    <div id="player-overlay" class="player-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="player-title">
       <div class="player-header">
         <button id="player-close" class="icon-btn player-close-btn" aria-label="Kembali" title="Kembali">
           <svg viewBox="0 0 24 24" width="22" height="22" fill="currentColor">
@@ -252,7 +252,7 @@
 
           <div id="cplayer-controls" class="cplayer-controls">
             <div class="cplayer-progress-wrap">
-              <div class="cplayer-progress" id="cplayer-progress" role="slider"
+              <div class="cplayer-progress" id="cplayer-progress" role="slider" tabindex="0"
                    aria-label="Progress video" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
                 <div class="cplayer-progress-buffered" id="cplayer-progress-buffered"></div>
                 <div class="cplayer-progress-played"   id="cplayer-progress-played"></div>
@@ -321,7 +321,7 @@
     <div id="toast" class="toast hidden" role="status" aria-live="polite"></div>
 
     <!-- Action Sheet (menu aksi per item) -->
-    <div id="action-sheet" class="action-sheet hidden" role="dialog" aria-modal="true" aria-label="Aksi file">
+    <div id="action-sheet" class="action-sheet hidden" role="dialog" aria-modal="true" aria-labelledby="action-sheet-title">
       <div class="action-sheet-backdrop"></div>
       <div class="action-sheet-panel">
         <div class="action-sheet-title" id="action-sheet-title"></div>

@@ -87,12 +87,12 @@ func TestCorruptFile(t *testing.T) {
 	// Tulis file JSON rusak
 	histPath := dir + "/watch_history.json"
 	_ = os.WriteFile(histPath, []byte("not valid json {{{"), 0644)
-	// Open harus tidak crash, return store kosong
+	// Open preserves the corrupt file and returns a usable empty store.
 	s, err := Open(dir)
-	if err != nil {
-		t.Fatal(err)
+	if err == nil {
+		t.Fatal("Open() error = nil, want corrupt-file error")
 	}
-	if len(s.List()) != 0 {
+	if s == nil || len(s.List()) != 0 {
 		t.Fatal("corrupt file should result in empty store")
 	}
 }

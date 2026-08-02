@@ -1,6 +1,7 @@
 package server
 
 import (
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"lan-server/internal/transcode"
@@ -114,7 +115,11 @@ func (c *Config) ConfigureMedia() {
 // CacheDir mengembalikan path direktori data aplikasi di luar shared folder.
 func (c *Config) CacheDir() string {
 	if dir, err := os.UserCacheDir(); err == nil {
-		return filepath.Join(dir, "lan-hub")
+		root, err := filepath.Abs(c.SharedFolder)
+		if err == nil {
+			sum := sha256.Sum256([]byte(filepath.Clean(root)))
+			return filepath.Join(dir, "lan-hub", fmt.Sprintf("%x", sum[:8]))
+		}
 	}
 	// ponytail: fallback only for platforms without a user cache directory;
 	// move it to an explicit app-data setting if those platforms need support.

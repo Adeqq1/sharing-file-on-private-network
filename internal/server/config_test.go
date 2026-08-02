@@ -23,8 +23,14 @@ func TestLoadConfigDefaultsPort(t *testing.T) {
 
 func TestConfigCacheDir(t *testing.T) {
 	t.Setenv("XDG_CACHE_HOME", t.TempDir())
-	cfg := Config{SharedFolder: filepath.Join("shared", "files")}
-	if got, want := cfg.CacheDir(), filepath.Join(os.Getenv("XDG_CACHE_HOME"), "lan-hub"); got != want {
-		t.Errorf("CacheDir() = %q, want %q", got, want)
+	firstCfg := Config{SharedFolder: filepath.Join("shared", "first")}
+	secondCfg := Config{SharedFolder: filepath.Join("shared", "second")}
+	first := firstCfg.CacheDir()
+	second := secondCfg.CacheDir()
+	if first == second {
+		t.Errorf("CacheDir() must namespace different shares: %q", first)
+	}
+	if filepath.Dir(first) != filepath.Join(os.Getenv("XDG_CACHE_HOME"), "lan-hub") {
+		t.Errorf("CacheDir() = %q outside lan-hub cache", first)
 	}
 }

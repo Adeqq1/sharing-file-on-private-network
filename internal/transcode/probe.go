@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -28,6 +29,7 @@ type ProbeResult struct {
 	FormatName string       `json:"format_name"` // "matroska", "mov,mp4,m4a", ...
 	Duration   float64      `json:"duration"`    // durasi dalam detik
 	Streams    []StreamInfo `json:"streams"`
+	SourceExt  string       `json:"-"`
 }
 
 // VideoCodec mengembalikan codec video pertama yang ditemukan, atau "".
@@ -148,7 +150,7 @@ func CanDirectServe(p *ProbeResult) bool {
 	case isMP4Container(format):
 		return (video == "" || video == "h264" || video == "avc") &&
 			(audio == "" || audio == "aac" || audio == "mp3")
-	case isWebMContainer(format):
+	case isWebMContainer(format, p.SourceExt):
 		return (video == "" || video == "vp8" || video == "vp9" || video == "av1") &&
 			(audio == "" || audio == "opus" || audio == "vorbis")
 	}
@@ -175,8 +177,8 @@ func isMP4Container(format string) bool {
 	return false
 }
 
-func isWebMContainer(format string) bool {
-	return strings.TrimSpace(strings.ToLower(format)) == "webm"
+func isWebMContainer(format, ext string) bool {
+	return strings.EqualFold(ext, ".webm") || strings.TrimSpace(strings.ToLower(format)) == "webm"
 }
 
 // IsTextSubtitleCodec reports whether ffmpeg can extract the subtitle as WebVTT.
@@ -344,6 +346,7 @@ func ProbeContext(ctx context.Context, absPath string, modTime time.Time) (*Prob
 
 	result := &ProbeResult{
 		FormatName: raw.Format.FormatName,
+		SourceExt:  strings.ToLower(filepath.Ext(absPath)),
 	}
 
 	// Parse durasi

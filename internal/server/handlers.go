@@ -950,7 +950,8 @@ func HandleUpload(cfg *Config) http.HandlerFunc {
 			return
 		}
 
-		r.Body = http.MaxBytesReader(w, r.Body, cfg.UploadMaxBytes*int64(cfg.UploadMaxFiles))
+		const multipartOverhead = 1 << 20
+		r.Body = http.MaxBytesReader(w, r.Body, cfg.UploadMaxBytes*int64(cfg.UploadMaxFiles)+multipartOverhead)
 		reader, err := r.MultipartReader()
 		if err != nil {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "request bukan multipart/form-data"})
@@ -1037,13 +1038,35 @@ func saveOnePart(part *multipart.Part, targetDir string, maxSize int64) uploadRe
 			ext := filepath.Ext(safeName)
 			name = fmt.Sprintf("%s (%d)%s", strings.TrimSuffix(safeName, ext), i, ext)
 		}
-		if err := os.Link(tmpPath, filepath.Join(targetDir, name)); err == nil {
+		destPath := filepath.Join(targetDir, name)
+		if err := os.Link(tmpPath, destPath); err == nil {
 			finalName = name
 			break
-		} else if !os.IsExist(err) {
+		} else if os.IsExist(err) {
+			continue
+		}
+
+		dest, createErr := os.OpenFile(destPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0644)
+		if os.IsExist(createErr) {
+			continue
+		}
+		if createErr != nil {
 			_ = os.Remove(tmpPath)
 			return uploadResult{Name: finalName, OK: false, Error: "gagal finalisasi file"}
 		}
+		source, copyErr := os.Open(tmpPath)
+		if copyErr == nil {
+			_, copyErr = io.Copy(dest, source)
+			source.Close()
+		}
+		closeErr := dest.Close()
+		if copyErr != nil || closeErr != nil {
+			_ = os.Remove(destPath)
+			_ = os.Remove(tmpPath)
+			return uploadResult{Name: finalName, OK: false, Error: "gagal finalisasi file"}
+		}
+		finalName = name
+		break
 	}
 	_ = os.Remove(tmpPath)
 

@@ -53,6 +53,35 @@ func TestHandleUploadRejectsTooManyFiles(t *testing.T) {
 	}
 }
 
+func TestHandleUploadAcceptsMaximumSizeFile(t *testing.T) {
+	dir := t.TempDir()
+	cfg := &Config{SharedFolder: dir, UploadMaxBytes: 1024, UploadMaxFiles: 1}
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	part, err := writer.CreateFormFile("file", "max.bin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := part.Write(bytes.Repeat([]byte{'x'}, 1024)); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/api/upload?path=", &body)
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	response := httptest.NewRecorder()
+
+	HandleUpload(cfg).ServeHTTP(response, req)
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d: %s", response.Code, http.StatusOK, response.Body.String())
+	}
+	info, err := os.Stat(filepath.Join(dir, "max.bin"))
+	if err != nil || info.Size() != 1024 {
+		t.Fatalf("uploaded file = %v, size = %v", err, info)
+	}
+}
+
 func TestHandleDownloadZipIncludesFiles(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "note.txt"), []byte("hello"), 0600); err != nil {

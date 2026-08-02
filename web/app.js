@@ -89,6 +89,8 @@ const savedView = localStorage.getItem('view_mode') || 'list';
 if (savedView === 'grid') fileList.classList.add('grid-mode');
 $('view-list').classList.toggle('active', savedView === 'list');
 $('view-grid').classList.toggle('active', savedView === 'grid');
+$('view-list').setAttribute('aria-pressed', String(savedView === 'list'));
+$('view-grid').setAttribute('aria-pressed', String(savedView === 'grid'));
 
 $('view-list').addEventListener('click', () => {
   fileList.classList.remove('grid-mode');

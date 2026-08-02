@@ -37,9 +37,10 @@ func TestCanDirectServe(t *testing.T) {
 			false,
 		},
 		{
-			"VP9 + Opus (WebM) → true",
+			"VP9 + Opus real ffprobe WebM → true",
 			&ProbeResult{
-				FormatName: "webm",
+				FormatName: "matroska,webm",
+				SourceExt:  ".webm",
 				Streams: []StreamInfo{
 					{Type: "video", Codec: "vp9"},
 					{Type: "audio", Codec: "opus"},

@@ -135,6 +135,8 @@ func FindFFprobe() string { return ffprobePath }
 func Configure(ffmpeg, ffprobe string) {
 	ffmpegPath = ffmpeg
 	ffprobePath = ffprobe
+	ffmpegVer = ""
+	hwAccel = ""
 }
 
 // Available mengembalikan true jika ffmpeg DAN ffprobe tersedia di PATH.

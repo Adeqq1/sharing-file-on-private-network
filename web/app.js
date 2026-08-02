@@ -95,12 +95,16 @@ $('view-list').addEventListener('click', () => {
   localStorage.setItem('view_mode', 'list');
   $('view-list').classList.add('active');
   $('view-grid').classList.remove('active');
+  $('view-list').setAttribute('aria-pressed', 'true');
+  $('view-grid').setAttribute('aria-pressed', 'false');
 });
 $('view-grid').addEventListener('click', () => {
   fileList.classList.add('grid-mode');
   localStorage.setItem('view_mode', 'grid');
   $('view-grid').classList.add('active');
   $('view-list').classList.remove('active');
+  $('view-list').setAttribute('aria-pressed', 'false');
+  $('view-grid').setAttribute('aria-pressed', 'true');
 });
 
 // ===== Skeleton Loading =====
@@ -246,6 +250,7 @@ function renderFiles(items) {
     const li = document.createElement('li');
     li.className = 'file-item';
     li.setAttribute('role', 'listitem');
+    li.tabIndex = 0;
 
     const meta = item.is_dir
       ? 'Folder'
@@ -297,6 +302,11 @@ function renderFiles(items) {
         downloadFile(item);
         showToast('⬇ Mendownload "' + item.name + '"');
       }
+    });
+    li.addEventListener('keydown', (ev) => {
+      if ((ev.key !== 'Enter' && ev.key !== ' ') || ev.target.closest('button')) return;
+      ev.preventDefault();
+      li.click();
     });
 
     // Tombol menu "⋯": buka action sheet
@@ -1272,6 +1282,7 @@ async function renderHistory() {
   for (const e of list) {
     const li = document.createElement('li');
     li.className = 'file-item';
+    li.tabIndex = 0;
     const pct = e.duration_sec > 0
       ? Math.min(100, (e.position_sec / e.duration_sec) * 100)
       : 0;
@@ -1292,6 +1303,11 @@ async function renderHistory() {
     li.addEventListener('click', (ev) => {
       if (ev.target.closest('.history-delete-btn')) return;
       openPlayerFromHistory(e);
+    });
+    li.addEventListener('keydown', (ev) => {
+      if ((ev.key !== 'Enter' && ev.key !== ' ') || ev.target.closest('button')) return;
+      ev.preventDefault();
+      li.click();
     });
     li.querySelector('.history-delete-btn').addEventListener('click', async (ev) => {
       ev.stopPropagation();

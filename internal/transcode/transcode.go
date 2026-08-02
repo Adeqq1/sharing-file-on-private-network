@@ -130,6 +130,13 @@ func FindFFmpeg() string { return ffmpegPath }
 // FindFFprobe mengembalikan absolute path binary ffprobe, atau "" jika tidak ada.
 func FindFFprobe() string { return ffprobePath }
 
+// Configure replaces auto-detected binaries with validated runtime paths.
+// It is called once after config.json is loaded.
+func Configure(ffmpeg, ffprobe string) {
+	ffmpegPath = ffmpeg
+	ffprobePath = ffprobe
+}
+
 // Available mengembalikan true jika ffmpeg DAN ffprobe tersedia di PATH.
 func Available() bool { return ffmpegPath != "" && ffprobePath != "" }
 
@@ -199,7 +206,8 @@ func detectHWAccel() string {
 
 // maxConcurrentTranscodes adalah batas maksimum proses ffmpeg transcode yang
 // berjalan bersamaan. Default 2 — cukup untuk LAN rumah tanpa overload CPU.
-// Remux (copy codec) tidak dihitung karena hampir tidak pakai CPU.
+// This caps every ffmpeg playback process, including remuxes, to protect
+// file descriptors, disk bandwidth, and the LAN from request bursts.
 const maxConcurrentTranscodes = 2
 
 // transcodeSem adalah semaphore berbasis channel buffered.
@@ -251,8 +259,8 @@ func MaxTranscodes() int {
 // Context cancel akan kill proses ffmpeg — penting agar tidak ada zombie process
 // saat user menutup player.
 //
-// Untuk full/audio transcode, semaphore dipakai agar max 2 proses berjalan
-// bersamaan. Remux tidak dibatasi karena hampir tidak pakai CPU.
+// Every playback process uses the semaphore so at most two ffmpeg processes
+// can be held open by concurrent clients.
 func Stream(ctx context.Context, absPath string, probe *ProbeResult, startSec float64, burnSubIndex int, out io.Writer) error {
 	args := buildFFmpegArgs(absPath, probe, startSec, burnSubIndex)
 	// Burn-in selalu butuh full transcode — paksa strategy bukan remux
@@ -261,13 +269,10 @@ func Stream(ctx context.Context, absPath string, probe *ProbeResult, startSec fl
 		strategy = "full transcode (burn-in)"
 	}
 
-	// Batasi concurrent transcode (bukan remux) via semaphore
-	if strategy != "remux" {
-		if !acquireTranscode(ctx) {
-			return ctx.Err()
-		}
-		defer releaseTranscode()
+	if !acquireTranscode(ctx) {
+		return ctx.Err()
 	}
+	defer releaseTranscode()
 
 	cmd := exec.CommandContext(ctx, ffmpegPath, args...)
 
@@ -371,7 +376,7 @@ func buildFFmpegArgs(absPath string, probe *ProbeResult, startSec float64, burnS
 		return burnArgs
 	} else {
 		switch {
-		case videoOK && audioOK:
+		case videoOK && audioOK && remuxCompatible(probe):
 			// Remux: copy semua stream tanpa re-encode (~0% CPU)
 			codecArgs = []string{"-c", "copy"}
 		case videoOK && !audioOK:
@@ -408,6 +413,16 @@ func buildFFmpegArgs(absPath string, probe *ProbeResult, startSec float64, burnS
 	return args
 }
 
+// remuxCompatible only permits codecs that are portable in the fMP4 output.
+func remuxCompatible(probe *ProbeResult) bool {
+	if probe == nil {
+		return false
+	}
+	video, audio := strings.ToLower(probe.VideoCodec()), strings.ToLower(probe.AudioCodec())
+	return (video == "" || video == "h264" || video == "avc") &&
+		(audio == "" || audio == "aac" || audio == "mp3")
+}
+
 // strategyName mengembalikan nama strategi untuk logging.
 func strategyName(probe *ProbeResult) string {
 	if probe == nil {
@@ -416,7 +431,7 @@ func strategyName(probe *ProbeResult) string {
 	videoOK := VideoCodecCompatible(probe.VideoCodec())
 	audioOK := AudioCodecCompatible(probe.AudioCodec())
 	switch {
-	case videoOK && audioOK:
+	case videoOK && audioOK && remuxCompatible(probe):
 		return "remux"
 	case videoOK:
 		return "audio transcode"

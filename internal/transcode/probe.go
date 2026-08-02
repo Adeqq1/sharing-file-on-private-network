@@ -142,15 +142,17 @@ func CanDirectServe(p *ProbeResult) bool {
 	if p == nil {
 		return false
 	}
-	// Cek codec video (boleh kosong = no video stream = OK)
-	if vc := p.VideoCodec(); vc != "" && !VideoCodecCompatible(vc) {
-		return false
+	format := strings.ToLower(p.FormatName)
+	video, audio := strings.ToLower(p.VideoCodec()), strings.ToLower(p.AudioCodec())
+	switch {
+	case isMP4Container(format):
+		return (video == "" || video == "h264" || video == "avc") &&
+			(audio == "" || audio == "aac" || audio == "mp3")
+	case isWebMContainer(format):
+		return (video == "" || video == "vp8" || video == "vp9" || video == "av1") &&
+			(audio == "" || audio == "opus" || audio == "vorbis")
 	}
-	// Cek codec audio (boleh kosong = no audio stream = OK)
-	if ac := p.AudioCodec(); ac != "" && !AudioCodecCompatible(ac) {
-		return false
-	}
-	return true
+	return false
 }
 
 // IsMKVContainer mengembalikan true kalau format-nya matroska (MKV/MKA/MKS).
@@ -161,6 +163,47 @@ func IsMKVContainer(p *ProbeResult) bool {
 		return false
 	}
 	return strings.Contains(strings.ToLower(p.FormatName), "matroska")
+}
+
+func isMP4Container(format string) bool {
+	for _, f := range strings.Split(format, ",") {
+		switch strings.TrimSpace(f) {
+		case "mov", "mp4", "m4a", "3gp", "3g2", "mj2":
+			return true
+		}
+	}
+	return false
+}
+
+func isWebMContainer(format string) bool {
+	return strings.TrimSpace(strings.ToLower(format)) == "webm"
+}
+
+// IsTextSubtitleCodec reports whether ffmpeg can extract the subtitle as WebVTT.
+func IsTextSubtitleCodec(codec string) bool {
+	switch strings.ToLower(codec) {
+	case "subrip", "ass", "ssa", "mov_text", "webvtt", "text":
+		return true
+	}
+	return false
+}
+
+// IsImageSubtitleCodec reports whether the subtitle must be burned into video.
+func IsImageSubtitleCodec(codec string) bool {
+	return isImageSubtitle(codec)
+}
+
+// SubtitleStream returns the exact subtitle stream identified by its global index.
+func (p *ProbeResult) SubtitleStream(index int) (StreamInfo, bool) {
+	if p == nil {
+		return StreamInfo{}, false
+	}
+	for _, stream := range p.Streams {
+		if stream.Index == index && stream.Type == "subtitle" {
+			return stream, true
+		}
+	}
+	return StreamInfo{}, false
 }
 
 // isBrowserNativeContainer mengembalikan true untuk container yang semua browser
@@ -261,6 +304,11 @@ type ffprobeOutput struct {
 // Probe menjalankan ffprobe pada file dan mengembalikan info codec & stream.
 // Hasil di-cache berdasarkan path + modtime. Timeout 10 detik.
 func Probe(absPath string, modTime time.Time) (*ProbeResult, error) {
+	return ProbeContext(context.Background(), absPath, modTime)
+}
+
+// ProbeContext derives the ffprobe timeout from the caller context.
+func ProbeContext(ctx context.Context, absPath string, modTime time.Time) (*ProbeResult, error) {
 	if ffprobePath == "" {
 		return nil, fmt.Errorf("ffprobe tidak tersedia")
 	}
@@ -270,7 +318,7 @@ func Probe(absPath string, modTime time.Time) (*ProbeResult, error) {
 		return cached, nil
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, ffprobePath,

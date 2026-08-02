@@ -53,21 +53,31 @@ func Open(cacheDir string) (*Store, error) {
 		if os.IsNotExist(err) {
 			return s, nil
 		}
-		// File ada tapi tidak bisa dibaca — return store kosong, jangan crash
-		return s, nil
+		return nil, fmt.Errorf("read history: %w", err)
 	}
 	var raw struct {
 		Version int              `json:"version"`
 		Entries map[string]Entry `json:"entries"`
 	}
 	if err := json.Unmarshal(data, &raw); err != nil {
-		// File korup → reset, jangan crash
-		return s, nil
+		corrupt := s.file + ".corrupt-" + time.Now().Format("20060102T150405")
+		if renameErr := os.Rename(s.file, corrupt); renameErr != nil {
+			return nil, fmt.Errorf("history corrupt and cannot preserve it: %w", renameErr)
+		}
+		return s, fmt.Errorf("history corrupt; preserved as %s", filepath.Base(corrupt))
+	}
+	if raw.Version != fileVersion {
+		return nil, fmt.Errorf("history version %d tidak didukung", raw.Version)
 	}
 	if raw.Entries != nil {
 		s.entries = raw.Entries
 	}
 	return s, nil
+}
+
+// NewMemory returns a usable store when persistent history is unavailable.
+func NewMemory() *Store {
+	return &Store{entries: make(map[string]Entry)}
 }
 
 // Set update atau insert satu entry. Auto-save ke disk.
@@ -149,6 +159,9 @@ func (s *Store) prune() {
 
 // flush menulis ke disk. Caller harus pegang mutex.
 func (s *Store) flush() error {
+	if s.file == "" {
+		return nil
+	}
 	raw := struct {
 		Version int              `json:"version"`
 		Entries map[string]Entry `json:"entries"`

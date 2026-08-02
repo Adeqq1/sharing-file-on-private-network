@@ -22,7 +22,7 @@ var illegalCharsRe = regexp.MustCompile(`[<>:"/\\|?*\x00-\x1f]`)
 // disimpan di Windows. Mengembalikan string kosong kalau tidak bisa diselamatkan.
 func SanitizeFilename(raw string) string {
 	// Buang path component, sisakan basename
-	name := filepath.Base(raw)
+	name := filepath.Base(strings.ToValidUTF8(raw, "_"))
 	if name == "." || name == ".." || name == "" || name == "/" || name == "\\" {
 		return ""
 	}
@@ -39,9 +39,12 @@ func SanitizeFilename(raw string) string {
 		name = "_" + name
 	}
 	// Limit panjang nama (NTFS max 255 char, sisakan buffer)
-	if len(name) > 200 {
+	if len([]rune(name)) > 200 {
 		ext := filepath.Ext(name)
-		name = name[:200-len(ext)] + ext
+		if len([]rune(ext)) >= 200 {
+			return string([]rune(name)[:200])
+		}
+		name = string([]rune(strings.TrimSuffix(name, ext))[:200-len([]rune(ext))]) + ext
 	}
 	return name
 }

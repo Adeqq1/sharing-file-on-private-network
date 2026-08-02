@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"lan-server/internal/transcode"
+	"math"
 	"os"
 	"path/filepath"
 )
@@ -15,6 +16,7 @@ type Config struct {
 	PINEnabled     bool   `json:"pin_enabled"`
 	FFmpegPath     string `json:"ffmpeg_path"`      // path ke executable ffmpeg, kosong = auto-detect
 	UploadMaxBytes int64  `json:"upload_max_bytes"` // batas ukuran per file upload (bytes), default 5 GB
+	UploadMaxFiles int    `json:"upload_max_files"` // batas file per request, default 32
 }
 
 // LoadConfig membaca config.json dari path yang diberikan.
@@ -33,6 +35,9 @@ func LoadConfig(path string) (*Config, error) {
 	if cfg.UploadMaxBytes <= 0 {
 		cfg.UploadMaxBytes = 5 << 30 // 5 GB
 	}
+	if cfg.UploadMaxFiles <= 0 {
+		cfg.UploadMaxFiles = 32
+	}
 	if err := cfg.Validate(); err != nil {
 		return nil, fmt.Errorf("config tidak valid: %w", err)
 	}
@@ -43,6 +48,27 @@ func LoadConfig(path string) (*Config, error) {
 func (c *Config) Validate() error {
 	if c.SharedFolder == "" {
 		return fmt.Errorf("shared_folder tidak boleh kosong")
+	}
+	if c.Port < 1 || c.Port > 65535 {
+		return fmt.Errorf("port harus antara 1 dan 65535")
+	}
+	if c.FFmpegPath != "" {
+		info, err := os.Stat(c.FFmpegPath)
+		if err != nil || info.IsDir() {
+			return fmt.Errorf("ffmpeg_path tidak valid")
+		}
+		probe := filepath.Join(filepath.Dir(c.FFmpegPath), "ffprobe")
+		if _, err := os.Stat(probe); err != nil {
+			if _, exeErr := os.Stat(probe + ".exe"); exeErr != nil {
+				return fmt.Errorf("ffprobe tidak ditemukan di folder ffmpeg_path")
+			}
+		}
+	}
+	if c.UploadMaxBytes > math.MaxInt64/int64(c.UploadMaxFiles) {
+		return fmt.Errorf("upload_max_bytes terlalu besar")
+	}
+	if c.UploadMaxFiles < 1 {
+		return fmt.Errorf("upload_max_files harus lebih dari 0")
 	}
 	return nil
 }
@@ -80,8 +106,17 @@ func (c *Config) FFprobeBinary() string {
 	return transcode.FindFFprobe()
 }
 
-// CacheDir mengembalikan path direktori cache untuk embedded subtitle.
-// Cache disimpan di dalam shared_folder agar tidak menulis ke folder OS lain.
+// ConfigureMedia makes the configured ffmpeg pair the process-wide media runtime.
+func (c *Config) ConfigureMedia() {
+	transcode.Configure(c.FFmpegBinary(), c.FFprobeBinary())
+}
+
+// CacheDir mengembalikan path direktori data aplikasi di luar shared folder.
 func (c *Config) CacheDir() string {
+	if dir, err := os.UserCacheDir(); err == nil {
+		return filepath.Join(dir, "lan-hub")
+	}
+	// ponytail: fallback only for platforms without a user cache directory;
+	// move it to an explicit app-data setting if those platforms need support.
 	return filepath.Join(c.SharedFolder, ".cache")
 }

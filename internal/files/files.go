@@ -37,6 +37,9 @@ type ListResult struct {
 // lalu memastikan hasilnya masih di dalam sharedRoot (termasuk cek symlink).
 // Mengembalikan ErrPathNotAllowed jika path mencoba keluar.
 func ResolveSafe(sharedRoot, relPath string) (string, error) {
+	if filepath.IsAbs(relPath) {
+		return "", ErrPathNotAllowed
+	}
 	absRoot, err := filepath.Abs(sharedRoot)
 	if err != nil {
 		return "", fmt.Errorf("shared_folder tidak valid: %w", err)
@@ -50,16 +53,30 @@ func ResolveSafe(sharedRoot, relPath string) (string, error) {
 		return "", ErrPathNotAllowed
 	}
 
-	// Cek symlink traversal: resolve symlink lalu cek ulang
-	realTarget, err := filepath.EvalSymlinks(target)
-	if err == nil {
-		realRoot, _ := filepath.EvalSymlinks(absRoot)
-		if realTarget != realRoot && !strings.HasPrefix(realTarget+sep, realRoot+sep) {
+	// Resolve the nearest existing ancestor so a new file below an escaping
+	// symlink is rejected too, not only paths whose final component exists.
+	ancestor := target
+	for {
+		if _, err := os.Lstat(ancestor); err == nil {
+			break
+		}
+		parent := filepath.Dir(ancestor)
+		if parent == ancestor {
 			return "", ErrPathNotAllowed
 		}
+		ancestor = parent
 	}
-	// Jika EvalSymlinks error (file belum ada, misal saat upload), biarkan lewat —
-	// caller bertanggung jawab cek keberadaan file.
+	realAncestor, err := filepath.EvalSymlinks(ancestor)
+	if err != nil {
+		return "", err
+	}
+	realRoot, err := filepath.EvalSymlinks(absRoot)
+	if err != nil {
+		return "", err
+	}
+	if realAncestor != realRoot && !strings.HasPrefix(realAncestor+sep, realRoot+sep) {
+		return "", ErrPathNotAllowed
+	}
 
 	return target, nil
 }

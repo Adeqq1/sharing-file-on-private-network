@@ -32,11 +32,11 @@ func init() {
 func New(cfg *Config) http.Handler {
 	mux := http.NewServeMux()
 
-	// History store — load dari disk, fallback ke store kosong kalau gagal
+	// History store — persist when possible, otherwise keep a usable memory store.
 	historyStore, err := history.Open(cfg.CacheDir())
 	if err != nil {
-		log.Printf("WARN: gagal load history store: %v — mulai dengan store kosong", err)
-		historyStore, _ = history.Open(cfg.CacheDir())
+		log.Printf("WARN: gagal load history store: %v — history tidak akan dipersist", err)
+		historyStore = history.NewMemory()
 	}
 
 	// API routes
@@ -61,6 +61,9 @@ func New(cfg *Config) http.Handler {
 
 	// Static files (web/)
 	staticFS := http.FileServer(http.Dir("web"))
+	mux.HandleFunc("/login", func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "/", http.StatusFound)
+	})
 	mux.Handle("/", cacheStatic(staticFS))
 
 	// Wrap: logger → auth middleware

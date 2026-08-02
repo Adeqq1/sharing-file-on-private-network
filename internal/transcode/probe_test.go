@@ -15,7 +15,7 @@ func TestCanDirectServe(t *testing.T) {
 			false,
 		},
 		{
-			"H.264 + AAC (MKV Kusonime) → true",
+			"H.264 + AAC MKV → false",
 			&ProbeResult{
 				FormatName: "matroska,webm",
 				Streams: []StreamInfo{
@@ -23,10 +23,10 @@ func TestCanDirectServe(t *testing.T) {
 					{Type: "audio", Codec: "aac"},
 				},
 			},
-			true,
+			false,
 		},
 		{
-			"H.264 + MP3 → true",
+			"H.264 + MP3 MKV → false",
 			&ProbeResult{
 				FormatName: "matroska,webm",
 				Streams: []StreamInfo{
@@ -34,7 +34,7 @@ func TestCanDirectServe(t *testing.T) {
 					{Type: "audio", Codec: "mp3"},
 				},
 			},
-			true,
+			false,
 		},
 		{
 			"VP9 + Opus (WebM) → true",
@@ -70,14 +70,14 @@ func TestCanDirectServe(t *testing.T) {
 			false,
 		},
 		{
-			"AV1 + no audio → true",
+			"AV1 + no audio MKV → false",
 			&ProbeResult{
 				FormatName: "matroska,webm",
 				Streams: []StreamInfo{
 					{Type: "video", Codec: "av1"},
 				},
 			},
-			true,
+			false,
 		},
 		{
 			"no video + AAC (audio-only) → true",

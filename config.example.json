@@ -3,5 +3,6 @@
   "port": 8080,
   "pin_enabled": false,
   "ffmpeg_path": "",
-  "upload_max_bytes": 5368709120
+  "upload_max_bytes": 5368709120,
+  "upload_max_files": 32
 }

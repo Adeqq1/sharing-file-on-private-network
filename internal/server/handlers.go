@@ -2,6 +2,7 @@ package server
 
 import (
 	"archive/zip"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -13,6 +14,7 @@ import (
 	"lan-server/internal/subtitle"
 	"lan-server/internal/transcode"
 	"log"
+	"math"
 	"mime/multipart"
 	"net/http"
 	"net/url"
@@ -35,6 +37,33 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.WriteHeader(status)
 	json.NewEncoder(w).Encode(v)
+}
+
+// requireSameOrigin rejects browser requests originating from another site.
+// Requests without Origin remain supported for local CLI clients.
+func requireSameOrigin(w http.ResponseWriter, r *http.Request) bool {
+	origin := r.Header.Get("Origin")
+	if origin == "" {
+		return true
+	}
+	u, err := url.Parse(origin)
+	if err != nil || u.Host != r.Host || (u.Scheme != "http" && u.Scheme != "https") {
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": "origin tidak diizinkan"})
+		return false
+	}
+	return true
+}
+
+func parseOffset(raw string) (float64, bool) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return 0, true
+	}
+	value, err := strconv.ParseFloat(raw, 64)
+	if err != nil || math.IsNaN(value) || math.IsInf(value, 0) || value < 0 {
+		return 0, false
+	}
+	return value, true
 }
 
 // resolveSafeOrRespond adalah helper: resolve path aman, atau tulis error response dan return false.
@@ -165,11 +194,20 @@ func HandleSubtitle(cfg *Config) http.HandlerFunc {
 				writeJSON(w, http.StatusBadRequest, map[string]string{"error": "stream index tidak valid"})
 				return
 			}
-			var offsetSec float64
-			if oStr := strings.TrimSpace(r.URL.Query().Get("offset")); oStr != "" {
-				if v, perr := strconv.ParseFloat(oStr, 64); perr == nil && v > 0 {
-					offsetSec = v
-				}
+			offsetSec, valid := parseOffset(r.URL.Query().Get("offset"))
+			if !valid {
+				writeJSON(w, http.StatusBadRequest, map[string]string{"error": "offset tidak valid"})
+				return
+			}
+			probe, err := transcode.ProbeContext(r.Context(), target, info.ModTime())
+			if err != nil {
+				writeJSON(w, http.StatusBadRequest, map[string]string{"error": "stream subtitle tidak valid"})
+				return
+			}
+			stream, exists := probe.SubtitleStream(streamIndex)
+			if !exists || !transcode.IsTextSubtitleCodec(stream.Codec) {
+				writeJSON(w, http.StatusBadRequest, map[string]string{"error": "stream subtitle tidak valid"})
+				return
 			}
 			serveEmbeddedSubtitle(w, r, cfg, target, streamIndex, offsetSec)
 			return
@@ -265,11 +303,10 @@ func HandleSubtitle(cfg *Config) http.HandlerFunc {
 		// Parse ?offset= untuk shift timestamp subtitle agar sinkron dengan seek transcode.
 		// ffmpeg -reset_timestamps 1 membuat output fMP4 selalu mulai dari t=0,
 		// tapi subtitle masih punya timestamp absolut. Kurangi offset agar sinkron.
-		var offsetSec float64
-		if oStr := strings.TrimSpace(r.URL.Query().Get("offset")); oStr != "" {
-			if v, err := strconv.ParseFloat(oStr, 64); err == nil && v > 0 {
-				offsetSec = v
-			}
+		offsetSec, valid := parseOffset(r.URL.Query().Get("offset"))
+		if !valid {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "offset tidak valid"})
+			return
 		}
 
 		var vttContent string
@@ -488,7 +525,7 @@ func HandleProbe(cfg *Config) http.HandlerFunc {
 			writeJSON(w, http.StatusNotFound, map[string]string{"error": "file tidak ditemukan"})
 			return
 		}
-		result, err := transcode.Probe(target, info.ModTime())
+		result, err := transcode.ProbeContext(r.Context(), target, info.ModTime())
 		if err != nil {
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 			return
@@ -535,7 +572,7 @@ func HandleTranscode(cfg *Config) http.HandlerFunc {
 			return
 		}
 
-		probe, err := transcode.Probe(target, info.ModTime())
+		probe, err := transcode.ProbeContext(r.Context(), target, info.ModTime())
 		if err != nil {
 			writeJSON(w, http.StatusInternalServerError, map[string]string{
 				"error": "gagal membaca info file: " + err.Error(),
@@ -547,17 +584,20 @@ func HandleTranscode(cfg *Config) http.HandlerFunc {
 		// Tapi: kalau burnSubIndex >= 0, JANGAN redirect — harus transcode untuk overlay subtitle.
 		burnSubIndex := -1
 		if bs := strings.TrimSpace(r.URL.Query().Get("burnSub")); bs != "" {
-			if v, err := strconv.Atoi(bs); err == nil && v >= 0 {
-				burnSubIndex = v
+			v, err := strconv.Atoi(bs)
+			if err != nil || v < 0 {
+				writeJSON(w, http.StatusBadRequest, map[string]string{"error": "stream subtitle tidak valid"})
+				return
 			}
+			stream, ok := probe.SubtitleStream(v)
+			if !ok || !transcode.IsImageSubtitleCodec(stream.Codec) {
+				writeJSON(w, http.StatusBadRequest, map[string]string{"error": "stream subtitle tidak valid"})
+				return
+			}
+			burnSubIndex = v
 		}
 
-		// Optimasi Fase 1: kalau codec sudah kompatibel browser modern, redirect ke
-		// /api/stream agar dapat Range support + Content-Length + ~0% CPU.
-		//
-		// MKV: bisa di-serve langsung di Chrome/Firefox, TAPI tidak di Safari/iOS.
-		// Jadi cek User-Agent dulu sebelum redirect.
-		//
+		// Redirect only containers/codecs that are portable in native browser playback.
 		// PENTING: jangan redirect kalau ada ?t= (seek offset).
 		// /api/stream pakai http.ServeFile yang mengabaikan ?t= — file selalu
 		// di-serve dari byte 0. Seek harus tetap lewat ffmpeg (-ss flag) agar
@@ -566,24 +606,15 @@ func HandleTranscode(cfg *Config) http.HandlerFunc {
 		hasSeek := tStr != "" && tStr != "0"
 
 		if !hasSeek && burnSubIndex < 0 && transcode.CanDirectServe(probe) {
-			isMKV := transcode.IsMKVContainer(probe)
-			safariOrIOS := isSafariOrIOS(r.Header.Get("User-Agent"))
-
-			// Direct-serve OK kalau:
-			//   - Container bukan MKV (selalu aman: MP4/WebM/MOV), ATAU
-			//   - Container MKV TAPI client bukan Safari/iOS
-			if !isMKV || !safariOrIOS {
-				http.Redirect(w, r, "/api/stream?path="+url.QueryEscape(relPath), http.StatusFound)
-				return
-			}
-			// Safari + MKV → fall-through ke remux ffmpeg di bawah (tidak ada cara lain)
+			http.Redirect(w, r, "/api/stream?path="+url.QueryEscape(relPath), http.StatusFound)
+			return
 		}
 
 		// Parse param ?t=<detik>. Kalau kosong/tidak ada → 0 (mulai dari awal).
 		var startSec float64
 		if tStr := strings.TrimSpace(r.URL.Query().Get("t")); tStr != "" {
 			parsed, perr := strconv.ParseFloat(tStr, 64)
-			if perr != nil || parsed < 0 {
+			if perr != nil || math.IsNaN(parsed) || math.IsInf(parsed, 0) || parsed < 0 {
 				writeJSON(w, http.StatusBadRequest, map[string]string{
 					"error": "parameter t tidak valid",
 				})
@@ -658,13 +689,12 @@ func uniqueDestPath(dir, filename string) string {
 	}
 	ext := filepath.Ext(filename)
 	base := strings.TrimSuffix(filename, ext)
-	for i := 1; i <= 999; i++ {
+	for i := 1; ; i++ {
 		candidate := filepath.Join(dir, fmt.Sprintf("%s (%d)%s", base, i, ext))
 		if _, err := os.Stat(candidate); os.IsNotExist(err) {
 			return candidate
 		}
 	}
-	return dest
 }
 
 // HandleDownloadZip menangani GET /api/download-zip?path=<relative_folder>
@@ -730,10 +760,9 @@ func HandleDownloadZip(cfg *Config) http.HandlerFunc {
 		}
 
 		zw := zip.NewWriter(w)
-		// #2: tangkap error Close() agar truncated ZIP bisa dideteksi di log.
 		defer func() {
 			if err := zw.Close(); err != nil {
-				log.Printf("download-zip: zw.Close gagal (zip mungkin tidak lengkap): %v", err)
+				log.Printf("download-zip: zw.Close gagal: %v", err)
 			}
 		}()
 
@@ -747,21 +776,30 @@ func HandleDownloadZip(cfg *Config) http.HandlerFunc {
 			".zip": true, ".gz": true, ".7z": true, ".rar": true, ".bz2": true,
 		}
 
-		addFileToZip := func(absPath, relInZip string) {
+		usedNames := make(map[string]bool)
+		addFileToZip := func(absPath, relInZip string) error {
+			if err := r.Context().Err(); err != nil {
+				return err
+			}
 			f, err := os.Open(absPath)
 			if err != nil {
-				return
+				return err
 			}
 			defer f.Close()
 			fi, err := f.Stat()
 			if err != nil {
-				return
+				return err
 			}
 			hdr, err := zip.FileInfoHeader(fi)
 			if err != nil {
-				return
+				return err
 			}
 			hdr.Name = filepath.ToSlash(relInZip)
+			for usedNames[hdr.Name] {
+				ext := filepath.Ext(hdr.Name)
+				hdr.Name = strings.TrimSuffix(hdr.Name, ext) + " (copy)" + ext
+			}
+			usedNames[hdr.Name] = true
 			// #4: gunakan Store untuk format yang sudah terkompresi
 			ext := strings.ToLower(filepath.Ext(fi.Name()))
 			if alreadyCompressedExt[ext] {
@@ -771,20 +809,27 @@ func HandleDownloadZip(cfg *Config) http.HandlerFunc {
 			}
 			wr, err := zw.CreateHeader(hdr)
 			if err != nil {
-				return
+				return err
 			}
-			_, _ = io.Copy(wr, f)
+			_, err = io.Copy(wr, &contextReader{ctx: r.Context(), r: f})
+			return err
 		}
 
 		for _, entry := range entries {
 			if !entry.isDir {
-				addFileToZip(entry.abs, entry.name)
+				if err := addFileToZip(entry.abs, entry.name); err != nil {
+					log.Printf("download-zip: gagal menambah %s: %v", entry.name, err)
+					return
+				}
 				continue
 			}
 			// Folder: walk rekursif
-			_ = filepath.Walk(entry.abs, func(path string, fi os.FileInfo, walkErr error) error {
+			if err := filepath.Walk(entry.abs, func(path string, fi os.FileInfo, walkErr error) error {
+				if err := r.Context().Err(); err != nil {
+					return err
+				}
 				if walkErr != nil {
-					return nil
+					return walkErr
 				}
 				// #1: skip folder .cache (berisi subtitle cache & history internal)
 				if fi.IsDir() && fi.Name() == ".cache" {
@@ -800,15 +845,29 @@ func HandleDownloadZip(cfg *Config) http.HandlerFunc {
 				}
 				rel, err := filepath.Rel(entry.abs, path)
 				if err != nil {
-					return nil
+					return err
 				}
 				// Prefix dengan nama folder agar struktur terjaga
 				relInZip := filepath.Join(entry.name, rel)
-				addFileToZip(path, relInZip)
-				return nil
-			})
+				return addFileToZip(path, relInZip)
+			}); err != nil {
+				log.Printf("download-zip: gagal membuat arsip %s: %v", entry.name, err)
+				return
+			}
 		}
 	}
+}
+
+type contextReader struct {
+	ctx context.Context
+	r   io.Reader
+}
+
+func (r *contextReader) Read(p []byte) (int, error) {
+	if err := r.ctx.Err(); err != nil {
+		return 0, err
+	}
+	return r.r.Read(p)
 }
 
 // TODO: multi-path ZIP (?path=a&path=b) sudah didukung backend di atas,
@@ -820,6 +879,9 @@ func HandleMkdir(cfg *Config) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+			return
+		}
+		if !requireSameOrigin(w, r) {
 			return
 		}
 		// #12: resolve parent sekali, pakai hasilnya langsung untuk bangun newPath.
@@ -873,6 +935,9 @@ func HandleUpload(cfg *Config) http.HandlerFunc {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 			return
 		}
+		if !requireSameOrigin(w, r) {
+			return
+		}
 
 		targetDir, ok := resolveSafeOrRespond(w, cfg.SharedFolder, r.URL.Query().Get("path"))
 		if !ok {
@@ -885,6 +950,7 @@ func HandleUpload(cfg *Config) http.HandlerFunc {
 			return
 		}
 
+		r.Body = http.MaxBytesReader(w, r.Body, cfg.UploadMaxBytes*int64(cfg.UploadMaxFiles))
 		reader, err := r.MultipartReader()
 		if err != nil {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "request bukan multipart/form-data"})
@@ -893,6 +959,7 @@ func HandleUpload(cfg *Config) http.HandlerFunc {
 
 		results := make([]uploadResult, 0, 4)
 		maxSize := cfg.UploadMaxBytes
+		fileCount := 0
 
 		for {
 			part, err := reader.NextPart()
@@ -909,6 +976,12 @@ func HandleUpload(cfg *Config) http.HandlerFunc {
 				_, _ = io.Copy(io.Discard, part)
 				part.Close()
 				continue
+			}
+			fileCount++
+			if fileCount > cfg.UploadMaxFiles {
+				part.Close()
+				writeJSON(w, http.StatusRequestEntityTooLarge, map[string]string{"error": "terlalu banyak file"})
+				return
 			}
 
 			res := saveOnePart(part, targetDir, maxSize)
@@ -937,14 +1010,12 @@ func saveOnePart(part *multipart.Part, targetDir string, maxSize int64) uploadRe
 		return uploadResult{Name: rawName, OK: false, Error: "nama file tidak valid"}
 	}
 
-	destPath := uniqueDestPath(targetDir, safeName)
-	finalName := filepath.Base(destPath)
-	tmpPath := destPath + ".uploading.tmp"
-
-	dst, err := os.Create(tmpPath)
+	finalName := safeName
+	dst, err := os.CreateTemp(targetDir, ".uploading-*")
 	if err != nil {
 		return uploadResult{Name: finalName, OK: false, Error: "gagal membuat file sementara"}
 	}
+	tmpPath := dst.Name()
 
 	// Limit reader supaya tidak boleh > maxSize.
 	limited := &io.LimitedReader{R: part, N: maxSize + 1}
@@ -960,10 +1031,21 @@ func saveOnePart(part *multipart.Part, targetDir string, maxSize int64) uploadRe
 		return uploadResult{Name: finalName, OK: false, Error: fmt.Sprintf("ukuran melebihi batas %d bytes", maxSize)}
 	}
 
-	if err := os.Rename(tmpPath, destPath); err != nil {
-		_ = os.Remove(tmpPath)
-		return uploadResult{Name: finalName, OK: false, Error: "gagal finalisasi file"}
+	for i := 0; ; i++ {
+		name := safeName
+		if i > 0 {
+			ext := filepath.Ext(safeName)
+			name = fmt.Sprintf("%s (%d)%s", strings.TrimSuffix(safeName, ext), i, ext)
+		}
+		if err := os.Link(tmpPath, filepath.Join(targetDir, name)); err == nil {
+			finalName = name
+			break
+		} else if !os.IsExist(err) {
+			_ = os.Remove(tmpPath)
+			return uploadResult{Name: finalName, OK: false, Error: "gagal finalisasi file"}
+		}
 	}
+	_ = os.Remove(tmpPath)
 
 	return uploadResult{Name: finalName, Size: written, OK: true}
 }
@@ -1056,6 +1138,9 @@ func HandleHistoryUpdate(cfg *Config, store *history.Store) http.HandlerFunc {
 			writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
 			return
 		}
+		if !requireSameOrigin(w, r) {
+			return
+		}
 		var body struct {
 			Path        string  `json:"path"`
 			PositionSec float64 `json:"position_sec"`
@@ -1090,6 +1175,9 @@ func HandleHistoryDelete(store *history.Store) http.HandlerFunc {
 			writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
 			return
 		}
+		if !requireSameOrigin(w, r) {
+			return
+		}
 		path := r.URL.Query().Get("path")
 		if path == "" {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "path wajib"})
@@ -1108,6 +1196,9 @@ func HandleHistoryClear(store *history.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+			return
+		}
+		if !requireSameOrigin(w, r) {
 			return
 		}
 		if err := store.Clear(); err != nil {

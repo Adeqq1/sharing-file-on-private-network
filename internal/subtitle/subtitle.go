@@ -2,7 +2,9 @@ package subtitle
 
 import (
 	"bytes"
+	"fmt"
 	"io"
+	"math"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -170,4 +172,105 @@ func SRTToVTT(data []byte) string {
 	content = commaTimestamp.ReplaceAllString(content, "$1.$2")
 	content = CleanCueTags(content)
 	return "WEBVTT\n\n" + content
+}
+
+// vttTimestamp mencocokkan timestamp WebVTT: HH:MM:SS.mmm atau MM:SS.mmm
+var vttTimestamp = regexp.MustCompile(`(\d{2}:)?\d{2}:\d{2}\.\d{3}`)
+
+// ShiftVTT mengurangi semua timestamp dalam string WebVTT sebesar offsetSec detik.
+// Digunakan untuk menyinkronkan subtitle dengan video transcode yang di-seek ke posisi
+// tertentu — ffmpeg pakai -reset_timestamps 1 sehingga output selalu mulai dari 0,
+// tapi subtitle masih punya timestamp absolut. Kurangi timestamp agar sinkron.
+//
+// Cue dengan endTime ≤ 0 setelah shift akan di-skip (tidak relevan sebelum posisi seek).
+func ShiftVTT(vtt string, offsetSec float64) string {
+	if offsetSec <= 0 {
+		return vtt
+	}
+	lines := strings.Split(vtt, "\n")
+	out := make([]string, 0, len(lines))
+	i := 0
+	for i < len(lines) {
+		line := lines[i]
+		// Deteksi baris timing cue: mengandung " --> "
+		if strings.Contains(line, " --> ") {
+			shifted, ok := shiftCueLine(line, offsetSec)
+			if ok {
+				out = append(out, shifted)
+			} else {
+				// Cue ini sebelum offset — skip cue beserta teksnya sampai baris kosong
+				i++
+				for i < len(lines) && lines[i] != "" {
+					i++
+				}
+				continue
+			}
+		} else {
+			out = append(out, line)
+		}
+		i++
+	}
+	return strings.Join(out, "\n")
+}
+
+// shiftCueLine menggeser satu baris timing "START --> END [settings]" sebesar -offsetSec.
+// Mengembalikan (shifted, true) kalau endTime > 0 setelah shift, (_, false) kalau skip.
+func shiftCueLine(line string, offsetSec float64) (string, bool) {
+	// Split "START --> END [optional settings]"
+	parts := strings.SplitN(line, " --> ", 2)
+	if len(parts) != 2 {
+		return line, true
+	}
+	startStr := strings.TrimSpace(parts[0])
+	rest := parts[1] // bisa "END" atau "END position:..." dll
+
+	// Pisahkan END dari setting opsional
+	restParts := strings.SplitN(rest, " ", 2)
+	endStr := restParts[0]
+	settings := ""
+	if len(restParts) == 2 {
+		settings = " " + restParts[1]
+	}
+
+	start := parseVTTTime(startStr) - offsetSec
+	end := parseVTTTime(endStr) - offsetSec
+
+	if end <= 0 {
+		return "", false // cue selesai sebelum offset seek
+	}
+	if start < 0 {
+		start = 0
+	}
+	return fmt.Sprintf("%s --> %s%s", formatVTTTime(start), formatVTTTime(end), settings), true
+}
+
+// parseVTTTime mengurai timestamp VTT (HH:MM:SS.mmm atau MM:SS.mmm) ke detik float.
+func parseVTTTime(s string) float64 {
+	parts := strings.Split(s, ":")
+	var h, m, sec float64
+	switch len(parts) {
+	case 3:
+		fmt.Sscanf(parts[0], "%f", &h)
+		fmt.Sscanf(parts[1], "%f", &m)
+		fmt.Sscanf(strings.ReplaceAll(parts[2], ",", "."), "%f", &sec)
+	case 2:
+		fmt.Sscanf(parts[0], "%f", &m)
+		fmt.Sscanf(strings.ReplaceAll(parts[1], ",", "."), "%f", &sec)
+	}
+	return h*3600 + m*60 + sec
+}
+
+// formatVTTTime mengubah detik float ke format timestamp VTT "HH:MM:SS.mmm".
+func formatVTTTime(s float64) string {
+	if s < 0 {
+		s = 0
+	}
+	total := int(math.Round(s * 1000))
+	ms := total % 1000
+	total /= 1000
+	sec := total % 60
+	total /= 60
+	min := total % 60
+	h := total / 60
+	return fmt.Sprintf("%02d:%02d:%02d.%03d", h, min, sec, ms)
 }

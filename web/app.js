@@ -525,13 +525,22 @@ function openPlayer(item) {
   // effectiveDuration() sudah tahu mode transcode sebelum loadedmetadata fire.
   // Durasi total (totalDuration) diisi setelah probe balik — kalau probe lambat,
   // effectiveDuration() fallback ke video.duration native sampai probe selesai.
-  //
-  // PENTING: setTotalDuration(0, true) hanya set flag isTranscoded, TIDAK reset
-  // transcodeOffset. Ini aman karena resetCplayer() sudah dipanggil di atas
-  // yang memastikan transcodeOffset = 0 saat buka video baru.
   if (item.needs_transcode && item.streamable === 'video') {
+    // Baca saved position SEKARANG (synchronous) sebelum src di-set.
+    // Ini mencegah double-transcode: tanpa ini, openPlayer load t=0 dulu,
+    // lalu loadedmetadata/_tryResume reload dengan ?t=saved (cancel yang pertama).
+    const path = filePathOf(item);
+    const histEntry = window.watchHistoryByPath?.[path];
+    let saved = histEntry && !histEntry.completed ? histEntry.position_sec : 0;
+    if (saved === 0) saved = parseFloat(localStorage.getItem('cp_pos_' + path) || '0');
+    const resumeT = saved > 5 ? Math.max(0, Math.floor(saved)) : 0;
+
+    // Set offset DULU sebelum setTotalDuration dan sebelum src di-set,
+    // agar guard di loadedmetadata (transcodeOffset > 0) sudah aktif.
+    if (resumeT > 0 && typeof setTranscodeOffset === 'function') setTranscodeOffset(resumeT);
+
     if (typeof setTotalDuration === 'function') setTotalDuration(0, true); // set flag dulu, durasi menyusul
-    fetch('/api/probe?path=' + encodeURIComponent(filePathOf(item)))
+    fetch('/api/probe?path=' + encodeURIComponent(path))
       .then(r => r.ok ? r.json() : null)
       .then(probe => {
         if (!probe || !probe.duration) return;
@@ -636,7 +645,15 @@ function openPlayer(item) {
       setTimeout(() => showToast('🎬 Konversi format on-the-fly... CPU laptop akan naik sebentar.'), 500);
     }
 
-    playerVideo.src = streamURL;
+    // Bangun URL final: kalau needs_transcode dan ada saved pos, langsung pakai ?t=
+    // agar ffmpeg tidak spawn dua kali (t=0 di-cancel lalu t=saved).
+    // resumeT sudah dihitung dan di-set ke transcodeOffset di blok atas.
+    let finalStreamURL = streamURL;
+    if (item.needs_transcode && item.streamable === 'video' && typeof resumeT !== 'undefined' && resumeT > 0) {
+      finalStreamURL = '/api/transcode?path=' + encodeURIComponent(filePathOf(item)) + '&t=' + resumeT;
+    }
+
+    playerVideo.src = finalStreamURL;
     playerVideo.load();
 
     // Setup subtitle DITUNDA sampai video benar-benar mulai play.

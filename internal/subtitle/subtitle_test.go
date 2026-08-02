@@ -284,3 +284,38 @@ func min(a, b int) int {
 	}
 	return b
 }
+
+func TestShiftVTT_ZeroOffset(t *testing.T) {
+	vtt := "WEBVTT\n\n00:00:10.000 --> 00:00:12.000\nHello\n"
+	result := ShiftVTT(vtt, 0)
+	if result != vtt {
+		t.Errorf("offset 0 harus return string yang sama, got: %q", result)
+	}
+}
+
+func TestShiftVTT_ShiftsTimestamps(t *testing.T) {
+	vtt := "WEBVTT\n\n00:02:30.000 --> 00:02:32.500\nHello\n"
+	result := ShiftVTT(vtt, 150) // offset 150 detik = 2 menit 30 detik
+	if !strings.Contains(result, "00:00:00.000 --> 00:00:02.500") {
+		t.Errorf("timestamp tidak dishift dengan benar, got: %q", result)
+	}
+}
+
+func TestShiftVTT_SkipsCueBeforeOffset(t *testing.T) {
+	vtt := "WEBVTT\n\n00:00:05.000 --> 00:00:07.000\nTerlalu awal\n\n00:00:20.000 --> 00:00:22.000\nCukup\n"
+	result := ShiftVTT(vtt, 15) // skip cue yang end <= 15
+	if strings.Contains(result, "Terlalu awal") {
+		t.Errorf("cue sebelum offset seharusnya di-skip")
+	}
+	if !strings.Contains(result, "Cukup") {
+		t.Errorf("cue setelah offset seharusnya ada")
+	}
+}
+
+func TestShiftVTT_PartialCueClampedToZero(t *testing.T) {
+	vtt := "WEBVTT\n\n00:00:10.000 --> 00:00:20.000\nMelintasi offset\n"
+	result := ShiftVTT(vtt, 15) // start = -5 → clamp ke 0, end = 5
+	if !strings.Contains(result, "00:00:00.000 --> 00:00:05.000") {
+		t.Errorf("cue yang melintasi offset seharusnya di-clamp, got: %q", result)
+	}
+}

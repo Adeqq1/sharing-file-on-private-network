@@ -165,7 +165,13 @@ func HandleSubtitle(cfg *Config) http.HandlerFunc {
 				writeJSON(w, http.StatusBadRequest, map[string]string{"error": "stream index tidak valid"})
 				return
 			}
-			serveEmbeddedSubtitle(w, r, cfg, target, streamIndex)
+			var offsetSec float64
+			if oStr := strings.TrimSpace(r.URL.Query().Get("offset")); oStr != "" {
+				if v, perr := strconv.ParseFloat(oStr, 64); perr == nil && v > 0 {
+					offsetSec = v
+				}
+			}
+			serveEmbeddedSubtitle(w, r, cfg, target, streamIndex, offsetSec)
 			return
 		}
 
@@ -256,21 +262,33 @@ func HandleSubtitle(cfg *Config) http.HandlerFunc {
 		w.Header().Set("Cache-Control", "no-cache")
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 
-		if chosen.isSRT {
-			// SRTToVTT sudah handle: encoding, BOM, tag cleaning, timestamp conversion
-			w.Write([]byte(subtitle.SRTToVTT(data)))
-		} else {
-			// VTT: tetap strip BOM dan pastikan encoding UTF-8
-			content := subtitle.ToUTF8(data)
-			content = subtitle.StripBOM(content)
-			w.Write([]byte(content))
+		// Parse ?offset= untuk shift timestamp subtitle agar sinkron dengan seek transcode.
+		// ffmpeg -reset_timestamps 1 membuat output fMP4 selalu mulai dari t=0,
+		// tapi subtitle masih punya timestamp absolut. Kurangi offset agar sinkron.
+		var offsetSec float64
+		if oStr := strings.TrimSpace(r.URL.Query().Get("offset")); oStr != "" {
+			if v, err := strconv.ParseFloat(oStr, 64); err == nil && v > 0 {
+				offsetSec = v
+			}
 		}
+
+		var vttContent string
+		if chosen.isSRT {
+			vttContent = subtitle.SRTToVTT(data)
+		} else {
+			vttContent = subtitle.StripBOM(subtitle.ToUTF8(data))
+		}
+		if offsetSec > 0 {
+			vttContent = subtitle.ShiftVTT(vttContent, offsetSec)
+		}
+		w.Write([]byte(vttContent))
 	}
 }
 
 // serveEmbeddedSubtitle mengekstrak subtitle stream dari file video pakai ffmpeg
 // dan mengirimnya sebagai WebVTT. Hasil di-cache di disk.
-func serveEmbeddedSubtitle(w http.ResponseWriter, r *http.Request, cfg *Config, videoPath string, streamIndex int) {
+// offsetSec > 0: shift timestamp VTT agar sinkron dengan transcode yang di-seek.
+func serveEmbeddedSubtitle(w http.ResponseWriter, r *http.Request, cfg *Config, videoPath string, streamIndex int, offsetSec float64) {
 	ffmpeg := cfg.FFmpegBinary()
 	if ffmpeg == "" {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{
@@ -287,9 +305,13 @@ func serveEmbeddedSubtitle(w http.ResponseWriter, r *http.Request, cfg *Config, 
 	}
 	if cached, ok := embed.ReadCache(cfg.CacheDir(), key, streamIndex); ok {
 		w.Header().Set("Content-Type", "text/vtt; charset=utf-8")
-		w.Header().Set("Cache-Control", "private, max-age=3600")
+		w.Header().Set("Cache-Control", "no-cache") // jangan cache karena offset bisa beda
 		w.Header().Set("Access-Control-Allow-Origin", "*")
-		w.Write(cached)
+		vtt := string(cached)
+		if offsetSec > 0 {
+			vtt = subtitle.ShiftVTT(vtt, offsetSec)
+		}
+		w.Write([]byte(vtt))
 		return
 	}
 
@@ -309,9 +331,13 @@ func serveEmbeddedSubtitle(w http.ResponseWriter, r *http.Request, cfg *Config, 
 	}
 
 	w.Header().Set("Content-Type", "text/vtt; charset=utf-8")
-	w.Header().Set("Cache-Control", "private, max-age=3600")
+	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Access-Control-Allow-Origin", "*")
-	w.Write(data)
+	vtt := string(data)
+	if offsetSec > 0 {
+		vtt = subtitle.ShiftVTT(vtt, offsetSec)
+	}
+	w.Write([]byte(vtt))
 }
 
 // HandleSubtitles menangani GET /api/subtitles?path=<video-path>

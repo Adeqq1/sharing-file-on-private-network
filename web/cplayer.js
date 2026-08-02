@@ -832,8 +832,14 @@ function switchSubtitleEntry(entry) {
   // di-append ke <video> yang belum punya src, atau yang mode-nya 'disabled',
   // tidak akan di-fetch sama sekali. Blob URL menghindari masalah ini karena
   // data sudah ada di memori — browser tidak perlu fetch lagi saat mode di-set.
+  //
+  // ?offset=: kurangi semua timestamp VTT di backend agar sinkron dengan seek
+  // transcode. ffmpeg -reset_timestamps 1 membuat fMP4 selalu mulai dari t=0,
+  // tapi subtitle masih punya timestamp absolut.
+  const offset = cplayer.state.transcodeOffset || 0;
   const apiUrl = '/api/subtitle?path=' + encodeURIComponent(path) +
-                 (entry.lang ? '&lang=' + encodeURIComponent(entry.lang) : '');
+                 (entry.lang ? '&lang=' + encodeURIComponent(entry.lang) : '') +
+                 (offset > 0 ? '&offset=' + offset : '');
   console.log('[sub] fetch subtitle:', apiUrl);
 
   cplayer.state.currentLang = entry.lang || '';
@@ -1399,46 +1405,52 @@ function _flushTranscodeSeek() {
   const v = cplayer.video;
   const wasPaused = v.paused;
 
-  // Simpan info subtitle aktif sebelum src di-reset.
-  // Saat v.src di-set ulang, browser menghapus semua <track> yang sudah di-append.
-  // Kita perlu re-attach subtitle setelah video siap kembali.
-  const activeBlobUrl  = cplayer.state._subtitleBlobUrl;
+  // Cabut Blob URL subtitle lama — timestamp sudah tidak valid setelah seek.
+  // Akan di-fetch ulang dengan ?offset=t baru setelah video siap.
+  if (cplayer.state._subtitleBlobUrl) {
+    URL.revokeObjectURL(cplayer.state._subtitleBlobUrl);
+    cplayer.state._subtitleBlobUrl = null;
+  }
   const activeSubEntry = cplayer.state.availableSubs[cplayer.state.currentSubIdx];
   const ccWasEnabled   = cplayer.state.ccEnabled && cplayer.state.burnSubIndex < 0;
-
-  // Reset Blob URL state — akan di-set ulang setelah re-attach
-  cplayer.state._subtitleBlobUrl = null;
 
   v.src = url;
   v.load();
 
-  // Re-attach subtitle setelah video siap (canplay).
-  // Pakai { once: true } agar tidak fire berkali-kali.
-  if (ccWasEnabled && activeBlobUrl && activeSubEntry) {
+  // Re-fetch subtitle dengan offset baru setelah video siap (canplay).
+  // Timestamp VTT di-shift di backend (?offset=t) agar sinkron dengan seek.
+  if (ccWasEnabled && activeSubEntry) {
     v.addEventListener('canplay', () => {
-      // Pastikan video masih sama dan subtitle masih aktif
-      if (!cplayer.video || cplayer.state.currentPath !== path) {
-        URL.revokeObjectURL(activeBlobUrl);
-        return;
-      }
-      // Hapus track lama (kalau ada sisa)
-      cplayer.video.querySelectorAll('track').forEach(t => t.remove());
+      if (!cplayer.video || cplayer.state.currentPath !== path) return;
+      // Hapus track lama
+      cplayer.video.querySelectorAll('track').forEach(tr => tr.remove());
 
-      const track = document.createElement('track');
-      track.kind    = 'subtitles';
-      track.label   = activeSubEntry.label || 'Subtitle';
-      track.srclang = activeSubEntry.lang  || 'und';
-      track.src     = activeBlobUrl;
-      track.default = true;
-      cplayer.video.appendChild(track);
+      const offset = cplayer.state.transcodeOffset || 0;
+      const apiUrl = '/api/subtitle?path=' + encodeURIComponent(path) +
+                     (activeSubEntry.lang ? '&lang=' + encodeURIComponent(activeSubEntry.lang) : '') +
+                     (offset > 0 ? '&offset=' + offset : '');
+      fetch(apiUrl)
+        .then(res => res.ok ? res.blob() : Promise.reject(res.status))
+        .then(blob => {
+          if (!cplayer.video || cplayer.state.currentPath !== path) return;
+          const blobUrl = URL.createObjectURL(blob);
+          cplayer.state._subtitleBlobUrl = blobUrl;
 
-      cplayer.state._subtitleBlobUrl = activeBlobUrl;
+          const track = document.createElement('track');
+          track.kind    = 'subtitles';
+          track.label   = activeSubEntry.label || 'Subtitle';
+          track.srclang = activeSubEntry.lang  || 'und';
+          track.src     = blobUrl;
+          track.default = true;
+          cplayer.video.appendChild(track);
 
-      const tt = cplayer.video.textTracks[cplayer.video.textTracks.length - 1];
-      if (tt) {
-        tt.mode = 'hidden';
-        attachSubtitleOverlayTrack(tt);
-      }
+          const tt = cplayer.video.textTracks[cplayer.video.textTracks.length - 1];
+          if (tt) {
+            tt.mode = 'hidden';
+            attachSubtitleOverlayTrack(tt);
+          }
+        })
+        .catch(() => { /* subtitle gagal — tidak fatal */ });
     }, { once: true });
   }
 
@@ -1688,6 +1700,12 @@ function resetCplayer() {
 function setPlayerItem(item, path) {
   cplayer.state.currentItem = item;
   cplayer.state.currentPath = path;
+}
+
+// setTranscodeOffset: set offset awal transcode dari app.js sebelum src di-set.
+// Dipanggil saat ada saved position agar loadedmetadata tidak spawn ffmpeg kedua.
+function setTranscodeOffset(offsetSec) {
+  cplayer.state.transcodeOffset = offsetSec || 0;
 }
 
 // setTotalDuration: dipanggil dari app.js setelah /api/probe berhasil.

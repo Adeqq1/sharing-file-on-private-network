@@ -20,6 +20,8 @@ const cplayer = {
     gestureTimer: null,
     currentItem: null,
     currentPath: '',         // path file video saat ini (untuk resume)
+    sessionId: 0,             // invalidates callbacks from an older player session
+    sourceId: 0,              // invalidates callbacks from an older media source
     queueItems: [],          // daftar video di folder yang sama
     queueIndex: -1,
     rafId: null,
@@ -138,6 +140,12 @@ function setupVideoEvents() {
     }
 
     _tryResume(saved);
+  });
+
+  // Native media can expose duration after loadedmetadata (especially when
+  // served progressively). Keep the custom timeline in sync when it changes.
+  v.addEventListener('durationchange', () => {
+    if (!cplayer.state.isTranscoded) updateTimeUI();
   });
 
   // Pakai requestAnimationFrame untuk update progress (poin #22)
@@ -710,12 +718,18 @@ async function setupSubtitle(item, filePathFn) {
     return;
   }
 
+  const sessionId = cplayer.state.sessionId;
+  if (cplayer.state.subtitleAbort) cplayer.state.subtitleAbort.abort();
+  cplayer.state.subtitleAbort = new AbortController();
+  const subtitleSignal = cplayer.state.subtitleAbort.signal;
+
   // Hapus track lama
   cplayer.video.querySelectorAll('track').forEach(t => t.remove());
   detachSubtitleOverlayTrack();
   hideSubtitleOverlay();
   cplayer.state.availableSubs = [];
   cplayer.state.currentLang = '';
+  cplayer.state.currentSubIdx = -1;
 
   if (item.streamable !== 'video') {
     cplayer.state.ccEnabled = false;
@@ -726,10 +740,11 @@ async function setupSubtitle(item, filePathFn) {
   try {
     const path = filePathFn(item);
     console.log('[sub] fetch /api/subtitles untuk', path);
-    const res = await fetch('/api/subtitles?path=' + encodeURIComponent(path));
+    const res = await fetch('/api/subtitles?path=' + encodeURIComponent(path), { signal: subtitleSignal });
     console.log('[sub] /api/subtitles status', res.status);
     const subs = await res.json();
     console.log('[sub] subs found:', subs);
+    if (sessionId !== cplayer.state.sessionId || subtitleSignal.aborted) return;
     if (Array.isArray(subs) && subs.length > 0) {
       // Simpan semua field termasuk source, track, dan image untuk embedded
       cplayer.state.availableSubs = subs;
@@ -747,6 +762,7 @@ async function setupSubtitle(item, filePathFn) {
       console.log('[sub] preferred:', preferred);
 
       if (preferred) {
+        cplayer.state.currentSubIdx = subs.indexOf(preferred);
         switchSubtitleEntry(preferred);
       } else if (subs.some(s => s.image)) {
         // Hanya ada PGS — kasih hint, jangan auto-burn (mahal)
@@ -757,6 +773,7 @@ async function setupSubtitle(item, filePathFn) {
       console.warn('[sub] tidak ada subtitle untuk file ini');
     }
   } catch (err) {
+    if (err.name === 'AbortError' || sessionId !== cplayer.state.sessionId) return;
     console.error('[sub] error fetch /api/subtitles:', err);
     // Fallback ke single subtitle (lama)
     cplayer.state.availableSubs = [{ lang: '', label: 'Default', source: 'external' }];
@@ -788,6 +805,13 @@ function switchSubtitleEntry(entry) {
     return;
   }
 
+  const sessionId = cplayer.state.sessionId;
+  const selectedIndex = cplayer.state.availableSubs.indexOf(entry);
+  cplayer.state.currentSubIdx = selectedIndex;
+  if (cplayer.state.subtitleAbort) cplayer.state.subtitleAbort.abort();
+  cplayer.state.subtitleAbort = new AbortController();
+  const subtitleSignal = cplayer.state.subtitleAbort.signal;
+
   // Hapus track lama (fix poin #6)
   cplayer.video.querySelectorAll('track').forEach(t => t.remove());
   detachSubtitleOverlayTrack();
@@ -817,10 +841,20 @@ function switchSubtitleEntry(entry) {
 
     const v = cplayer.video;
     const wasPaused = v.paused;
+    const sourceId = ++cplayer.state.sourceId;
+    if (cplayer.state.subtitleAbort) cplayer.state.subtitleAbort.abort();
+    cplayer.state.subtitleAbort = null;
+    v.pause();
+    v.removeAttribute('src');
+    v.load();
     v.src = url;
     v.load();
     if (!wasPaused) {
-      v.addEventListener('canplay', () => v.play().catch(() => {}), { once: true });
+      v.addEventListener('canplay', () => {
+        if (sessionId === cplayer.state.sessionId && sourceId === cplayer.state.sourceId) {
+          v.play().catch(() => {});
+        }
+      }, { once: true });
     }
     return;
   }
@@ -845,7 +879,7 @@ function switchSubtitleEntry(entry) {
   cplayer.state.currentLang = entry.lang || '';
   cplayer.state.ccEnabled = true;
 
-  fetch(apiUrl)
+  fetch(apiUrl, { signal: subtitleSignal })
     .then(res => {
       console.log('[sub] /api/subtitle status:', res.status);
       if (!res.ok) throw new Error('HTTP ' + res.status);
@@ -854,7 +888,7 @@ function switchSubtitleEntry(entry) {
     .then(blob => {
       console.log('[sub] blob size:', blob.size, 'type:', blob.type);
       // Pastikan subtitle ini masih relevan (user belum ganti video/subtitle)
-      if (!cplayer.video || cplayer.state.currentPath !== path) return;
+       if (!cplayer.video || cplayer.state.currentPath !== path || sessionId !== cplayer.state.sessionId) return;
 
       const blobUrl = URL.createObjectURL(blob);
       cplayer.state._subtitleBlobUrl = blobUrl;
@@ -884,6 +918,7 @@ function switchSubtitleEntry(entry) {
       showToastFromPlayer('💬 Subtitle: ' + (entry.label || entry.lang || 'Default'));
     })
     .catch(err => {
+      if (err.name === 'AbortError' || sessionId !== cplayer.state.sessionId) return;
       console.error('[sub] fetch subtitle gagal:', err);
       // Toast error agar user tahu subtitle gagal (Tahap 6)
       showToastFromPlayer('⚠ Subtitle gagal dimuat: ' + (err.message || 'error'));
@@ -1333,10 +1368,11 @@ function seekToPointer(e) {
 // ── Seek helpers untuk video transcode ──────────────────────────────────────
 
 // effectiveDuration: durasi penuh untuk display.
-// Untuk transcode pakai totalDuration dari /api/probe, untuk native pakai video.duration.
+// Untuk transcode hanya pakai metadata penuh dari /api/probe, karena
+// video.duration pada fragmented stream hanya mencerminkan segmen yang termuat.
 function effectiveDuration() {
-  if (cplayer.state.isTranscoded && cplayer.state.totalDuration > 0) {
-    return cplayer.state.totalDuration;
+  if (cplayer.state.isTranscoded) {
+    return cplayer.state.totalDuration || 0;
   }
   return cplayer.video?.duration ?? 0;
 }
@@ -1380,6 +1416,8 @@ function _flushTranscodeSeek() {
   const path = cplayer.state.currentPath;
   if (!path || cplayer.state.pendingSeek == null) return;
 
+  const sessionId = cplayer.state.sessionId;
+
   const t = Math.max(0, Math.floor(cplayer.state.pendingSeek));
   cplayer.state.pendingSeek = null;
 
@@ -1404,6 +1442,12 @@ function _flushTranscodeSeek() {
   const url = '/api/transcode?' + new URLSearchParams(params).toString();
   const v = cplayer.video;
   const wasPaused = v.paused;
+  const sourceId = ++cplayer.state.sourceId;
+
+  if (cplayer.state.subtitleAbort) cplayer.state.subtitleAbort.abort();
+  cplayer.state.subtitleAbort = null;
+  v.querySelectorAll('track').forEach(tr => tr.remove());
+  detachSubtitleOverlayTrack();
 
   // Cabut Blob URL subtitle lama — timestamp sudah tidak valid setelah seek.
   // Akan di-fetch ulang dengan ?offset=t baru setelah video siap.
@@ -1414,6 +1458,9 @@ function _flushTranscodeSeek() {
   const activeSubEntry = cplayer.state.availableSubs[cplayer.state.currentSubIdx];
   const ccWasEnabled   = cplayer.state.ccEnabled && cplayer.state.burnSubIndex < 0;
 
+  v.pause();
+  v.removeAttribute('src');
+  v.load();
   v.src = url;
   v.load();
 
@@ -1421,18 +1468,22 @@ function _flushTranscodeSeek() {
   // Timestamp VTT di-shift di backend (?offset=t) agar sinkron dengan seek.
   if (ccWasEnabled && activeSubEntry) {
     v.addEventListener('canplay', () => {
-      if (!cplayer.video || cplayer.state.currentPath !== path) return;
+      if (!cplayer.video || cplayer.state.currentPath !== path ||
+          sessionId !== cplayer.state.sessionId || sourceId !== cplayer.state.sourceId) return;
       // Hapus track lama
       cplayer.video.querySelectorAll('track').forEach(tr => tr.remove());
 
-      const offset = cplayer.state.transcodeOffset || 0;
+      const offset = t;
       const apiUrl = '/api/subtitle?path=' + encodeURIComponent(path) +
                      (activeSubEntry.lang ? '&lang=' + encodeURIComponent(activeSubEntry.lang) : '') +
                      (offset > 0 ? '&offset=' + offset : '');
-      fetch(apiUrl)
+      const subtitleAbort = new AbortController();
+      cplayer.state.subtitleAbort = subtitleAbort;
+      fetch(apiUrl, { signal: subtitleAbort.signal })
         .then(res => res.ok ? res.blob() : Promise.reject(res.status))
         .then(blob => {
-          if (!cplayer.video || cplayer.state.currentPath !== path) return;
+           if (!cplayer.video || cplayer.state.currentPath !== path ||
+               sessionId !== cplayer.state.sessionId || sourceId !== cplayer.state.sourceId) return;
           const blobUrl = URL.createObjectURL(blob);
           cplayer.state._subtitleBlobUrl = blobUrl;
 
@@ -1450,13 +1501,19 @@ function _flushTranscodeSeek() {
             attachSubtitleOverlayTrack(tt);
           }
         })
-        .catch(() => { /* subtitle gagal — tidak fatal */ });
+        .catch(err => {
+          if (err.name !== 'AbortError') console.debug('subtitle seek gagal:', err);
+        });
     }, { once: true });
   }
 
   // Auto play setelah ready, kecuali user memang lagi pause
   if (!wasPaused) {
-    v.addEventListener('canplay', () => v.play().catch(() => {}), { once: true });
+    v.addEventListener('canplay', () => {
+      if (sessionId === cplayer.state.sessionId && sourceId === cplayer.state.sourceId) {
+        v.play().catch(() => {});
+      }
+    }, { once: true });
   }
 
   // Peringatan subtitle offset — hanya untuk text-based subtitle (bukan burn-in)
@@ -1629,6 +1686,11 @@ function showToastFromPlayer(msg) {
 // ===== Reset saat close =====
 
 function resetCplayer() {
+  cplayer.state.sessionId++;
+  cplayer.state.sourceId++;
+  if (cplayer.state.subtitleAbort) cplayer.state.subtitleAbort.abort();
+  cplayer.state.subtitleAbort = null;
+
   clearTimeout(cplayer.state.hideTimer);
   clearTimeout(cplayer.state.gestureTimer);
   cancelAnimationFrame(cplayer.state.rafId);
@@ -1642,6 +1704,7 @@ function resetCplayer() {
   if (cplayer.dom.hoverTime) cplayer.dom.hoverTime.classList.add('hidden');
   hideSubtitleOverlay();
   detachSubtitleOverlayTrack();
+  if (cplayer.video) cplayer.video.querySelectorAll('track').forEach(track => track.remove());
 
   if (cplayer.video) cplayer.video.style.filter = '';
 
@@ -1711,8 +1774,7 @@ function setTranscodeOffset(offsetSec) {
 // setTotalDuration: dipanggil dari app.js setelah /api/probe berhasil.
 // Menyimpan durasi penuh dan menandai video sebagai transcode.
 // Kalau durationSec = 0 dan isTranscoded = true, flag isTranscoded tetap di-set
-// agar effectiveDuration() tahu ini transcoded (fallback ke video.duration native
-// sampai probe balik dengan durasi sesungguhnya).
+// agar effectiveDuration() tidak memakai durasi segmen transcode.
 //
 // BUG FIX: jangan reset transcodeOffset di sini.
 // Fungsi ini dipanggil async (setelah /api/probe selesai). Kalau user sudah

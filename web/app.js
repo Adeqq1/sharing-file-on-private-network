@@ -356,11 +356,9 @@ function playItem(item) {
   }
   openPlayer(item);
 
-  // AUTO-FULLSCREEN: hanya untuk video, dipicu langsung dari tap user (user gesture masih aktif).
-  // Audio tidak di-fullscreen-kan. iOS akan gagal diam-diam (di-catch di enterFullscreen).
-  if (item.streamable === 'video' && typeof enterFullscreen === 'function') {
-    enterFullscreen();
-  }
+  // Jangan auto-fullscreen: beberapa browser Android mengganti player custom
+  // dengan kontrol native, yang tidak mengetahui durasi fragmented transcode.
+  // User tetap bisa memakai tombol fullscreen custom.
 }
 
 function openItemMenu(item) {
@@ -491,6 +489,13 @@ const playerPip     = $('player-pip');
 
 let playerAbort = new AbortController();
 
+function stopMediaElement(media) {
+  if (!media) return;
+  media.pause();
+  media.removeAttribute('src');
+  media.load();
+}
+
 // Buka player untuk format yang browser support (MP4, WebM, MP3, dll)
 // atau format yang butuh transcode via /api/transcode (MKV, AVI, WMV, FLV, dll)
 function openPlayer(item) {
@@ -514,17 +519,17 @@ function openPlayer(item) {
   const playerError     = $('player-error');
   const playerErrorMsg  = $('player-error-msg');
 
-  // Reset state
-  playerVideo.pause();
-  playerAudio.pause();
-  playerVideo.src = '';
-  playerAudio.src = '';
+  // Invalidate callbacks before replacing either media element. Mobile browsers
+  // can keep the old resource alive briefly unless it is explicitly unloaded.
+  if (typeof resetCplayer === 'function') resetCplayer();
+  stopMediaElement(playerVideo);
+  stopMediaElement(playerAudio);
   playerAudioWrap.classList.add('hidden');
   playerError.classList.add('hidden');
   playerSpinner.classList.remove('hidden');
   playerPip.classList.add('hidden');
-
-  if (typeof resetCplayer === 'function') resetCplayer();
+  playerVideo.controls = false;
+  playerVideo.removeAttribute('controls');
 
   playerTitle.textContent = item.name;
   playerOverlay.classList.remove('hidden');
@@ -532,56 +537,55 @@ function openPlayer(item) {
 
   if (typeof setPlayerItem === 'function') setPlayerItem(item, filePathOf(item));
   if (typeof setQueue === 'function') setQueue(state.allItems, item);
+  const playerSessionId = cplayer.state.sessionId;
 
-  // Untuk video transcode, set flag isTranscoded segera (synchronous) agar
-  // effectiveDuration() sudah tahu mode transcode sebelum loadedmetadata fire.
-  // Durasi total (totalDuration) diisi setelah probe balik — kalau probe lambat,
-  // effectiveDuration() fallback ke video.duration native sampai probe selesai.
-  if (item.needs_transcode && item.streamable === 'video') {
+  let resumeT = 0;
+
+  // Probe semua video agar durasi penuh tersedia juga untuk stream native.
+  // Untuk transcode, flag harus di-set sebelum loadedmetadata agar seek memakai ?t=.
+  if (item.streamable === 'video') {
+    const isTranscoded = item.needs_transcode === true;
     // Baca saved position SEKARANG (synchronous) sebelum src di-set.
     // Ini mencegah double-transcode: tanpa ini, openPlayer load t=0 dulu,
     // lalu loadedmetadata/_tryResume reload dengan ?t=saved (cancel yang pertama).
     const path = filePathOf(item);
     const histEntry = window.watchHistoryByPath?.[path];
-    let saved = histEntry && !histEntry.completed ? histEntry.position_sec : 0;
-    if (saved === 0) saved = parseFloat(localStorage.getItem('cp_pos_' + path) || '0');
-    const resumeT = saved > 5 ? Math.max(0, Math.floor(saved)) : 0;
+    if (isTranscoded) {
+      let saved = histEntry && !histEntry.completed ? histEntry.position_sec : 0;
+      if (saved === 0) saved = parseFloat(localStorage.getItem('cp_pos_' + path) || '0');
+      resumeT = saved > 5 ? Math.max(0, Math.floor(saved)) : 0;
+    }
+    const knownDuration = histEntry && histEntry.duration_sec > 0 ? histEntry.duration_sec : 0;
 
     // Set offset DULU sebelum setTotalDuration dan sebelum src di-set,
     // agar guard di loadedmetadata (transcodeOffset > 0) sudah aktif.
-    if (resumeT > 0 && typeof setTranscodeOffset === 'function') setTranscodeOffset(resumeT);
+    if (isTranscoded && resumeT > 0 && typeof setTranscodeOffset === 'function') {
+      setTranscodeOffset(resumeT);
+    }
 
-    if (typeof setTotalDuration === 'function') setTotalDuration(0, true); // set flag dulu, durasi menyusul
+    if (typeof setTotalDuration === 'function') setTotalDuration(knownDuration, isTranscoded);
     fetch('/api/probe?path=' + encodeURIComponent(path))
-      .then(r => r.ok ? r.json() : null)
+      .then(r => {
+        if (!r.ok) throw new Error('probe HTTP ' + r.status);
+        return r.json();
+      })
       .then(probe => {
-        if (!probe || !probe.duration) return;
+        if (!probe || !Number.isFinite(Number(probe.duration)) || Number(probe.duration) <= 0) {
+          throw new Error('durasi probe tidak tersedia');
+        }
         if (typeof setTotalDuration === 'function') {
           // Pastikan ini masih untuk video yang sama (user belum ganti video)
-          if (cplayer.state && cplayer.state.currentPath === filePathOf(item)) {
-            // Cek apakah file ini akan di-serve native (CanDirectServe di backend).
-            // Kalau codec video+audio kompatibel browser, backend akan redirect ke
-            // /api/stream (native seek, ~0% CPU). Dalam kasus ini isTranscoded = false
-            // agar seek pakai native video.currentTime, bukan reload ffmpeg.
-            //
-            // Logika ini mirror CanDirectServe() di probe.go:
-            //   - video codec: h264/avc/vp8/vp9/av1 (atau tidak ada video)
-            //   - audio codec: aac/mp3/opus/vorbis/mp2 (atau tidak ada audio)
-            const compatVideoCodecs = ['h264', 'avc', 'vp8', 'vp9', 'av1'];
-            const compatAudioCodecs = ['aac', 'mp3', 'opus', 'vorbis', 'mp2'];
-            const videoStream = (probe.streams || []).find(s => s.type === 'video');
-            const audioStream = (probe.streams || []).find(s => s.type === 'audio');
-            const videoOK = !videoStream || compatVideoCodecs.includes((videoStream.codec || '').toLowerCase());
-            const audioOK = !audioStream || compatAudioCodecs.includes((audioStream.codec || '').toLowerCase());
-            const willDirectServe = videoOK && audioOK;
-
-            // isTranscoded = false kalau akan di-serve native (seek pakai video.currentTime)
-            // isTranscoded = true kalau butuh ffmpeg (seek pakai ?t= reload)
-            setTotalDuration(probe.duration, !willDirectServe);
+            if (cplayer.state && cplayer.state.currentPath === filePathOf(item) &&
+                playerSessionId === cplayer.state.sessionId) {
+              setTotalDuration(probe.duration, isTranscoded);
           }
         }
       })
-      .catch(() => { /* probe gagal — effectiveDuration() fallback ke video.duration */ });
+      .catch(err => {
+        // Native playback may still obtain duration from the media element;
+        // transcode playback cannot seek reliably without probe metadata.
+        console.warn('[player] probe gagal:', err.message);
+      });
   } else {
     if (typeof setTotalDuration === 'function') setTotalDuration(0, false);
   }
@@ -592,6 +596,8 @@ function openPlayer(item) {
 
   if (item.streamable === 'video') {
     if (document.pictureInPictureEnabled) playerPip.classList.remove('hidden');
+    const sessionId = playerSessionId;
+    const sourceId = cplayer.state.sourceId;
 
     playerVideo.addEventListener('leavepictureinpicture', () => {
       playerPip.innerHTML = '⧉'; playerPip.title = 'Picture in Picture';
@@ -601,6 +607,7 @@ function openPlayer(item) {
     }, { signal: sig });
 
     playerVideo.addEventListener('canplay', () => {
+      if (sessionId !== cplayer.state.sessionId || sourceId !== cplayer.state.sourceId) return;
       playerSpinner.classList.add('hidden');
       // Hapus pesan slow-transcode kalau ada
       const spinnerEl = $('player-spinner');
@@ -661,7 +668,7 @@ function openPlayer(item) {
     // agar ffmpeg tidak spawn dua kali (t=0 di-cancel lalu t=saved).
     // resumeT sudah dihitung dan di-set ke transcodeOffset di blok atas.
     let finalStreamURL = streamURL;
-    if (item.needs_transcode && item.streamable === 'video' && typeof resumeT !== 'undefined' && resumeT > 0) {
+    if (item.needs_transcode && item.streamable === 'video' && resumeT > 0) {
       finalStreamURL = '/api/transcode?path=' + encodeURIComponent(filePathOf(item)) + '&t=' + resumeT;
     }
 
@@ -682,7 +689,9 @@ function openPlayer(item) {
     //   - Tradeoff: subtitle muncul ~2–4 detik lebih lambat — jauh lebih bisa
     //     diterima daripada video buffering berkali-kali.
     playerVideo.addEventListener('playing', () => {
+      if (sessionId !== cplayer.state.sessionId || sourceId !== cplayer.state.sourceId) return;
       const delayTimer = setTimeout(() => {
+        if (sessionId !== cplayer.state.sessionId || sourceId !== cplayer.state.sourceId) return;
         if (typeof setupSubtitle === 'function') setupSubtitle(item, filePathOf);
       }, 1500);
       // Batalkan kalau player ditutup sebelum 1.5 detik habis
@@ -743,11 +752,9 @@ function closePlayer() {
   playerAbort = new AbortController();
   const playerVideo = $('player-video');
   const playerAudio = $('player-audio');
-  playerVideo.pause();
-  playerAudio.pause();
-  playerVideo.src = '';
-  playerAudio.src = '';
   if (typeof resetCplayer === 'function') resetCplayer();
+  stopMediaElement(playerVideo);
+  stopMediaElement(playerAudio);
   playerOverlay.classList.add('hidden');
   document.body.style.overflow = '';
   state.currentPlayerItem = null;

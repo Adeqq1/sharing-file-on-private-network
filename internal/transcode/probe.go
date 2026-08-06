@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -296,6 +297,7 @@ type ffprobeOutput struct {
 		Index       int    `json:"index"`
 		CodecType   string `json:"codec_type"`
 		CodecName   string `json:"codec_name"`
+		Duration    string `json:"duration"`
 		Disposition struct {
 			Default int `json:"default"`
 		} `json:"disposition"`
@@ -349,11 +351,15 @@ func ProbeContext(ctx context.Context, absPath string, modTime time.Time) (*Prob
 		SourceExt:  strings.ToLower(filepath.Ext(absPath)),
 	}
 
-	// Parse durasi
-	if raw.Format.Duration != "" {
-		var dur float64
-		fmt.Sscanf(raw.Format.Duration, "%f", &dur)
-		result.Duration = dur
+	// Parse durasi. Sebagian container tidak mengisi format.duration, tetapi
+	// tetap menuliskan duration pada stream video/audio.
+	result.Duration = parseDuration(raw.Format.Duration)
+	if result.Duration == 0 {
+		for _, stream := range raw.Streams {
+			if duration := parseDuration(stream.Duration); duration > result.Duration {
+				result.Duration = duration
+			}
+		}
 	}
 
 	// Parse streams
@@ -376,4 +382,12 @@ func ProbeContext(ctx context.Context, absPath string, modTime time.Time) (*Prob
 
 	cacheSet(absPath, modTime, result)
 	return result, nil
+}
+
+func parseDuration(value string) float64 {
+	duration, err := strconv.ParseFloat(strings.TrimSpace(value), 64)
+	if err != nil || duration <= 0 {
+		return 0
+	}
+	return duration
 }

@@ -212,6 +212,10 @@ func detectHWAccel() string {
 // file descriptors, disk bandwidth, and the LAN from request bursts.
 const maxConcurrentTranscodes = 2
 
+// seekPrerollSec keeps input seeking fast while leaving a short window for
+// accurate output seeking to align decoded audio and video.
+const seekPrerollSec = 4
+
 // transcodeSem adalah semaphore berbasis channel buffered.
 var transcodeSem = make(chan struct{}, maxConcurrentTranscodes)
 
@@ -311,20 +315,13 @@ func Stream(ctx context.Context, absPath string, probe *ProbeResult, startSec fl
 }
 
 // buildFFmpegArgs memilih argumen ffmpeg berdasarkan codec di probe.
-// startSec > 0 menambahkan -ss sebelum -i (input seek — cepat, lompat ke keyframe terdekat).
+// startSec > 0 memakai input seek dekat target lalu output seek presisi agar
+// audio/video tidak mengambil titik waktu berbeda dari keyframe sebelumnya.
 // burnSubIndex >= 0 mengaktifkan burn-in subtitle via -vf subtitles filter.
 func buildFFmpegArgs(absPath string, probe *ProbeResult, startSec float64, burnSubIndex int) []string {
 	// Argumen dasar: tidak tampilkan banner, tidak interaktif
 	base := []string{
 		"-hide_banner", "-loglevel", "error",
-	}
-
-	// Input seek: pakai -ss SEBELUM -i (fast seek, lompat ke keyframe terdekat).
-	// Hanya tambahkan kalau startSec > 0 untuk hindari overhead di playback awal.
-	if startSec > 0 {
-		// Precision 1 desimal cukup — frontend sudah Math.floor, dan ffmpeg
-		// lompat ke keyframe terdekat (resolusi GOP 2-10 detik).
-		base = append(base, "-ss", strconv.FormatFloat(startSec, 'f', 1, 64))
 	}
 
 	// Hardware decode acceleration — hanya aktifkan untuk full-transcode (bukan remux/copy).
@@ -337,8 +334,19 @@ func buildFFmpegArgs(absPath string, probe *ProbeResult, startSec float64, burnS
 		base = append(base, "-hwaccel", "auto")
 	}
 
+	seekOffset := startSec
+	if startSec > seekPrerollSec {
+		base = append(base, "-ss", strconv.FormatFloat(startSec-seekPrerollSec, 'f', 1, 64))
+		seekOffset = seekPrerollSec
+	}
+
 	base = append(base,
 		"-i", absPath,
+	)
+	if startSec > 0 {
+		base = append(base, "-ss", strconv.FormatFloat(seekOffset, 'f', 1, 64))
+	}
+	base = append(base,
 		"-map", "0:v:0",
 		"-map", "0:a:0?", // "?" = opsional, kalau tidak ada audio tetap jalan
 	)
@@ -351,17 +359,22 @@ func buildFFmpegArgs(absPath string, probe *ProbeResult, startSec float64, burnS
 		// Syntax: -filter_complex "[0:v][0:s:N]overlay[v]" -map "[v]" -map 0:a:0?
 		// di mana N adalah index relatif di antara subtitle stream (bukan global stream index).
 		si := subStreamIndex(probe, burnSubIndex)
-		filterComplex := fmt.Sprintf("[0:v][0:s:%d]overlay[v]", si)
+		filterComplex := fmt.Sprintf("[0:v]setpts=PTS-STARTPTS[base];[base][0:s:%d]overlay=shortest=1[v]", si)
 		// Hapus -map 0:v:0 dan -map 0:a:0? dari base karena akan di-override oleh filter_complex
 		// Kita rebuild args dari awal untuk burn-in agar tidak konflik dengan -map di base.
 		burnBase := []string{"-hide_banner", "-loglevel", "error"}
 		if hwAccel != "" {
 			burnBase = append(burnBase, "-hwaccel", "auto")
 		}
-		if startSec > 0 {
-			burnBase = append(burnBase, "-ss", strconv.FormatFloat(startSec, 'f', 1, 64))
+		seekOffset := startSec
+		if startSec > seekPrerollSec {
+			burnBase = append(burnBase, "-ss", strconv.FormatFloat(startSec-seekPrerollSec, 'f', 1, 64))
+			seekOffset = seekPrerollSec
 		}
 		burnBase = append(burnBase, "-i", absPath)
+		if startSec > 0 {
+			burnBase = append(burnBase, "-ss", strconv.FormatFloat(seekOffset, 'f', 1, 64))
+		}
 		burnArgs := append(burnBase,
 			"-filter_complex", filterComplex,
 			"-map", "[v]",
@@ -369,6 +382,7 @@ func buildFFmpegArgs(absPath string, probe *ProbeResult, startSec float64, burnS
 		)
 		burnArgs = append(burnArgs, buildVideoEncoder()...)
 		burnArgs = append(burnArgs,
+			"-af", "aresample=async=1:first_pts=0,asetpts=PTS-STARTPTS",
 			"-c:a", "aac", "-b:a", "192k", "-ac", "2",
 			"-f", "mp4",
 			"-movflags", "frag_keyframe+empty_moov+default_base_moof",
@@ -385,12 +399,15 @@ func buildFFmpegArgs(absPath string, probe *ProbeResult, startSec float64, burnS
 			// Audio transcode only: video di-copy, audio di-encode ke AAC stereo
 			codecArgs = []string{
 				"-c:v", "copy",
+				"-af", "aresample=async=1:first_pts=0,asetpts=PTS-STARTPTS",
 				"-c:a", "aac", "-b:a", "192k", "-ac", "2",
 			}
 		default:
 			// Full transcode: video ke H.264 (HW jika tersedia), audio ke AAC
 			codecArgs = buildVideoEncoder()
+			codecArgs = append(codecArgs, "-vf", "setpts=PTS-STARTPTS")
 			codecArgs = append(codecArgs,
+				"-af", "aresample=async=1:first_pts=0,asetpts=PTS-STARTPTS",
 				"-c:a", "aac", "-b:a", "192k", "-ac", "2",
 			)
 		}
@@ -399,8 +416,10 @@ func buildFFmpegArgs(absPath string, probe *ProbeResult, startSec float64, burnS
 	// Output: fragmented MP4 ke stdout (pipe:1)
 	// frag_keyframe+empty_moov+default_base_moof = bisa di-play sebelum file selesai
 	outputArgs := []string{
+		"-max_interleave_delta", "0",
+		"-flush_packets", "1",
 		"-f", "mp4",
-		"-movflags", "frag_keyframe+empty_moov+default_base_moof",
+		"-movflags", "frag_every_frame+empty_moov+default_base_moof",
 		"-reset_timestamps", "1",
 		"pipe:1",
 	}
@@ -469,6 +488,7 @@ func buildVideoEncoder() []string {
 			"-b:v", "5M", // bitrate target untuk VBR
 			"-maxrate", "8M", // batas atas bitrate
 			"-g", "60", // keyframe tiap 2 detik (30fps) — seek-friendly
+			"-bf", "0", // jangan menunda frame video relatif terhadap audio
 			"-pix_fmt", "yuv420p",
 		}
 	case "qsv":
@@ -477,6 +497,7 @@ func buildVideoEncoder() []string {
 			"-preset", "veryfast",
 			"-global_quality", "23",
 			"-g", "60",
+			"-bf", "0",
 			"-pix_fmt", "yuv420p",
 		}
 	case "amf":
@@ -487,6 +508,7 @@ func buildVideoEncoder() []string {
 			"-qp_i", "23",
 			"-qp_p", "25",
 			"-g", "60",
+			"-bf", "0",
 			"-pix_fmt", "yuv420p",
 		}
 	case "videotoolbox":
@@ -494,6 +516,7 @@ func buildVideoEncoder() []string {
 			"-c:v", "h264_videotoolbox",
 			"-b:v", "5M",
 			"-g", "60",
+			"-bf", "0",
 			"-pix_fmt", "yuv420p",
 		}
 	default:
@@ -503,6 +526,7 @@ func buildVideoEncoder() []string {
 			"-preset", "veryfast",
 			"-crf", "23",
 			"-g", "60", // keyframe tiap 2 detik (30fps) — seek-friendly
+			"-bf", "0", // B-frame membuat frame video pertama terlambat dari audio
 			"-pix_fmt", "yuv420p",
 		}
 	}
